@@ -1,0 +1,24 @@
+services:
+  mcloudsync-coordinator:
+    build: ./coordinator
+    container_name: mcloudsync-coordinator
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      - PORT=8787
+      - DATA_DIR=/data
+      - AUTH_TOKEN=${MCLOUD_SYNC_TOKEN:-}
+      - LOCK_TTL_MS=90000
+    volumes:
+      - ./mcloudsync-data:/data
+
+  # Optional: Expose the Coordinator to your friend over the internet for free without port forwarding
+  # Run `docker logs mcloudsync-tunnel` to see your public https://xxxx.trycloudflare.com URL!
+  mcloudsync-tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: mcloudsync-tunnel
+    restart: unless-stopped
+    depends_on:
+      - mcloudsync-coordinator
+    command: tunnel --no-autoupdate --url http://mcloudsync-coordinator:8787

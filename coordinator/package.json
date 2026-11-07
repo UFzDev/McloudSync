@@ -1,0 +1,25 @@
+{
+  "name": "mcloudsync-coordinator",
+  "version": "1.0.0",
+  "description": "Ultra-lightweight World Mutex & SHA-256 Delta Storage Coordinator for MCloudSync",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs",
+    "test": "node --test test.mjs"
+  },
+  "keywords": [
+    "minecraft",
+    "fabric",
+    "world-sync",
+    "coordinator",
+    "mcloud",
+    "p2p"
+  ],
+  "author": "UFzDev",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

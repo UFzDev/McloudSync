@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "id": "mcloudsync",
+  "version": "${version}",
+  "name": "MCloud Sync",
+  "description": "P2P/Coordinator World Mutex, SHA-256 Delta Region Synchronization, and Singleplayer Inventory Isolation for MCloud. Share heavy modded worlds with friends without paying for a 24/7 dedicated server.",
+  "authors": [
+    "UFzDev"
+  ],
+  "contact": {
+    "homepage": "https://github.com/UFzDev/McloudSync",
+    "sources": "https://github.com/UFzDev/McloudSync",
+    "issues": "https://github.com/UFzDev/McloudSync/issues"
+  },
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "dev.ufz.mcloudsync.MCloudSyncMod"
+    ]
+  },
+  "mixins": [
+    "mcloudsync.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "minecraft": ">=1.21",
+    "java": ">=21",
+    "fabric-api": "*",
+    "mcloud": ">=1.1.0"
+  }
+}

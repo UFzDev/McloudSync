@@ -1,0 +1,38 @@
+# Gradle
+.gradle/
+build/
+out/
+bin/
+
+# IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+
+# Fabric / Loom / Logs
+run/
+logs/
+*.log
+*.log.gz
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coordinator & Node
+node_modules/
+mcloudsync-data/
+**/mcloudsync-data/
+
+# Internal Agent Notes & Confidential Instructions
+AGENTS.md
+CLAUDE.md
+.agents/
+
+# Repomix
+repomix-output.*
