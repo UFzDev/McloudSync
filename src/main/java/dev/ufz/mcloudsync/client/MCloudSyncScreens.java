@@ -21,11 +21,13 @@ import net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
 import net.minecraft.network.chat.Component;
+import net.minecraft.util.FormattedCharSequence;
 import net.minecraft.world.level.storage.LevelSummary;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -394,8 +396,7 @@ public class MCloudSyncScreens {
         private final boolean forceTakeoverStale;
         private final Runnable onProceed;
 
-        private Component phaseText = Component.literal("Checking world mutex lock...").withStyle(ChatFormatting.AQUA);
-        private Component progressText = Component.empty();
+        private Component statusText = Component.literal("Checking world mutex lock...").withStyle(ChatFormatting.AQUA);
         private boolean hasError = false;
         private String errorMessage = null;
         private Thread syncWorkerThread = null;
@@ -406,7 +407,7 @@ public class MCloudSyncScreens {
         }
 
         public SyncingWorldScreen(Screen parent, Path worldDir, String levelId, UUID playerUuid, String playerName, boolean forceTakeoverStale, Runnable onProceed) {
-            super(Component.literal("MCloud Sync — Synchronizing"));
+            super(Component.literal("MCloud Sync — Synchronizing World"));
             this.parent = parent;
             this.worldDir = worldDir;
             this.levelId = levelId;
@@ -451,22 +452,25 @@ public class MCloudSyncScreens {
             int centerY = this.height / 2;
 
             if (this.hasError) {
-                this.addRenderableWidget(Button.builder(
+                Button playOfflineButton = Button.builder(
                         Component.literal("Play Offline (Local Only)").withStyle(ChatFormatting.YELLOW, ChatFormatting.BOLD),
                         btn -> playOfflineAndProceed()
-                ).bounds(centerX - 130, centerY + 28, 260, 20).build());
+                ).bounds(centerX - 130, centerY + 18, 260, 20).build();
+                this.addRenderableWidget(playOfflineButton);
 
-                this.addRenderableWidget(Button.builder(
+                Button cancelButton = Button.builder(
                         Component.literal("Cancel (Back to World List)"),
                         btn -> cancelAndReturn()
-                ).bounds(centerX - 130, centerY + 53, 260, 20).build());
+                ).bounds(centerX - 130, centerY + 44, 260, 20).build();
+                this.addRenderableWidget(cancelButton);
                 return;
             }
 
-            this.addRenderableWidget(Button.builder(
+            Button cancelButton = Button.builder(
                     Component.literal("Cancel"),
                     btn -> cancelAndReturn()
-            ).bounds(centerX - 60, centerY + 45, 120, 20).build());
+            ).bounds(centerX - 60, centerY + 44, 120, 20).build();
+            this.addRenderableWidget(cancelButton);
 
             // Start async synchronization
             if (this.syncWorkerThread == null) {
@@ -479,11 +483,10 @@ public class MCloudSyncScreens {
                                 this.forceTakeoverStale,
                                 (phase, done, total) -> this.minecraft.execute(() -> {
                                     if (this.cancelled) return;
-                                    this.phaseText = Component.literal(phase).withStyle(ChatFormatting.AQUA);
                                     if (total > 0) {
-                                        this.progressText = Component.literal(done + " / " + total + " files").withStyle(ChatFormatting.GRAY);
+                                        this.statusText = Component.literal(phase + " (" + done + " / " + total + " files)").withStyle(ChatFormatting.AQUA);
                                     } else {
-                                        this.progressText = Component.empty();
+                                        this.statusText = Component.literal(phase).withStyle(ChatFormatting.AQUA);
                                     }
                                 })
                         );
@@ -523,6 +526,7 @@ public class MCloudSyncScreens {
                         this.minecraft.execute(() -> {
                             this.hasError = true;
                             this.errorMessage = e.getMessage() != null ? e.getMessage() : e.toString();
+                            this.statusText = Component.literal("Coordinator unreachable (offline/no internet).\nYou can safely play offline; MCloudSync will merge and upload your progress when connection returns.").withStyle(ChatFormatting.WHITE);
                             this.rebuildWidgets();
                         });
                     }
@@ -561,18 +565,15 @@ public class MCloudSyncScreens {
             int centerX = this.width / 2;
             int centerY = this.height / 2;
 
-            graphics.drawCenteredString(this.font, Component.literal("MCloud Sync — Synchronizing World").withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD), centerX, centerY - 50, 0xFFAA00);
+            graphics.drawCenteredString(this.font, this.title, centerX, centerY - 65, 0xFFAA00);
 
-            if (!this.hasError) {
-                graphics.drawCenteredString(this.font, this.phaseText, centerX, centerY - 20, 0x55FFFF);
-                if (this.progressText != null && !this.progressText.getString().isEmpty()) {
-                    graphics.drawCenteredString(this.font, this.progressText, centerX, centerY - 5, 0xAAAAAA);
+            if (this.statusText != null && !this.statusText.getString().isEmpty()) {
+                List<FormattedCharSequence> lines = this.font.split(this.statusText, Math.min(320, this.width - 40));
+                int textY = centerY - 30;
+                for (FormattedCharSequence line : lines) {
+                    graphics.drawCenteredString(this.font, line, centerX, textY, 0xFFFFFF);
+                    textY += 12;
                 }
-            } else {
-                graphics.drawCenteredString(this.font, Component.literal("Coordinator Unreachable (Offline Mode)").withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD), centerX, centerY - 45, 0xFFAA00);
-                graphics.drawCenteredString(this.font, Component.literal("Coordinator unreachable (offline/no internet).").withStyle(ChatFormatting.WHITE), centerX, centerY - 25, 0xFFFFFF);
-                graphics.drawCenteredString(this.font, Component.literal("You can safely play offline; MCloudSync will merge and").withStyle(ChatFormatting.GRAY), centerX, centerY - 12, 0xAAAAAA);
-                graphics.drawCenteredString(this.font, Component.literal("upload your progress when connection returns.").withStyle(ChatFormatting.GRAY), centerX, centerY + 1, 0xAAAAAA);
             }
         }
     }
@@ -612,13 +613,13 @@ public class MCloudSyncScreens {
                 } else {
                     sendJoinRequestAndPoll();
                 }
-            }).bounds(centerX - 130, centerY + 15, 260, 20).build();
+            }).bounds(centerX - 130, centerY + 18, 260, 20).build();
             this.addRenderableWidget(this.actionButton);
 
             this.addRenderableWidget(Button.builder(
                     Component.literal("Back to World List"),
                     btn -> this.minecraft.setScreen(this.parent)
-            ).bounds(centerX - 130, centerY + 42, 260, 20).build());
+            ).bounds(centerX - 130, centerY + 44, 260, 20).build());
         }
 
         private void connectToMCloudTunnel(String tunnelAddress) {
@@ -716,16 +717,21 @@ public class MCloudSyncScreens {
             int centerX = this.width / 2;
             int centerY = this.height / 2;
 
-            graphics.drawCenteredString(this.font, this.title, centerX, centerY - 55, 0xFFAA00);
+            graphics.drawCenteredString(this.font, this.title, centerX, centerY - 65, 0xFFAA00);
             graphics.drawCenteredString(this.font,
                     Component.literal(this.holderName + " is currently playing this world!").withStyle(ChatFormatting.WHITE, ChatFormatting.BOLD),
-                    centerX, centerY - 30, 0xFFFFFF);
+                    centerX, centerY - 38, 0xFFFFFF);
             graphics.drawCenteredString(this.font,
                     Component.literal("To prevent world corruption, Singleplayer access is locked.").withStyle(ChatFormatting.GRAY),
-                    centerX, centerY - 14, 0xAAAAAA);
+                    centerX, centerY - 20, 0xAAAAAA);
 
             if (this.feedbackText != null && !this.feedbackText.getString().isEmpty()) {
-                graphics.drawCenteredString(this.font, this.feedbackText, centerX, centerY + 72, 0xFFFFFF);
+                List<FormattedCharSequence> lines = this.font.split(this.feedbackText, Math.min(320, this.width - 40));
+                int textY = centerY + 70;
+                for (FormattedCharSequence line : lines) {
+                    graphics.drawCenteredString(this.font, line, centerX, textY, 0xFFFFFF);
+                    textY += 12;
+                }
             }
         }
     }
@@ -757,12 +763,12 @@ public class MCloudSyncScreens {
             this.addRenderableWidget(Button.builder(
                     Component.literal("Wait / Back to World List"),
                     btn -> this.minecraft.setScreen(this.parent)
-            ).bounds(centerX - 140, centerY + 28, 280, 20).build());
+            ).bounds(centerX - 140, centerY + 18, 280, 20).build());
 
             this.addRenderableWidget(Button.builder(
                     Component.literal("Take Over World Now (Auto-Merge Later)").withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD),
                     btn -> this.minecraft.setScreen(new SyncingWorldScreen(this.parent, this.worldDir, this.levelId, this.onProceed, true))
-            ).bounds(centerX - 140, centerY + 53, 280, 20).build());
+            ).bounds(centerX - 140, centerY + 44, 280, 20).build());
         }
 
         @Override
@@ -772,16 +778,16 @@ public class MCloudSyncScreens {
             int centerX = this.width / 2;
             int centerY = this.height / 2;
 
-            graphics.drawCenteredString(this.font, this.title, centerX, centerY - 55, 0xFFAA00);
+            graphics.drawCenteredString(this.font, this.title, centerX, centerY - 65, 0xFFAA00);
             graphics.drawCenteredString(this.font,
                     Component.literal(this.holderName + " lost internet or crashed while playing!").withStyle(ChatFormatting.WHITE, ChatFormatting.BOLD),
-                    centerX, centerY - 30, 0xFFFFFF);
+                    centerX, centerY - 40, 0xFFFFFF);
             graphics.drawCenteredString(this.font,
                     Component.literal("Their latest progress hasn't uploaded yet. Wait for them to reconnect,").withStyle(ChatFormatting.GRAY),
-                    centerX, centerY - 14, 0xAAAAAA);
+                    centerX, centerY - 22, 0xAAAAAA);
             graphics.drawCenteredString(this.font,
                     Component.literal("or take over now (changes will smart-merge later).").withStyle(ChatFormatting.GRAY),
-                    centerX, centerY - 2, 0xAAAAAA);
+                    centerX, centerY - 10, 0xAAAAAA);
         }
     }
 }
