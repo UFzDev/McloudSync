@@ -3,6 +3,9 @@ package dev.ufz.mcloudsync.client;
 import dev.ufz.mcloud.network.MCloudAddressRegistry;
 import dev.ufz.mcloudsync.MCloudSyncMod;
 import dev.ufz.mcloudsync.config.MCloudSyncConfig;
+import dev.ufz.mcloudsync.sync.ActiveWorldSessionManager;
+import dev.ufz.mcloudsync.sync.LevelDatPlayerSwapper;
+import dev.ufz.mcloudsync.sync.LocalCrashJournal;
 import dev.ufz.mcloudsync.sync.SyncCoordinatorClient;
 import dev.ufz.mcloudsync.sync.WorldSyncMetadata;
 import dev.ufz.mcloudsync.sync.WorldSyncOrchestrator;
@@ -409,14 +412,14 @@ public class MCloudSyncScreens {
 
             if (this.hasError) {
                 this.addRenderableWidget(Button.builder(
-                        Component.literal("Play Offline (Local Only)").withStyle(ChatFormatting.YELLOW),
-                        btn -> this.onProceed.run()
-                ).bounds(centerX - 130, centerY + 30, 260, 20).build());
+                        Component.literal("Play Offline (Local Only)").withStyle(ChatFormatting.YELLOW, ChatFormatting.BOLD),
+                        btn -> playOfflineAndProceed()
+                ).bounds(centerX - 130, centerY + 28, 260, 20).build());
 
                 this.addRenderableWidget(Button.builder(
                         Component.literal("Cancel (Back to World List)"),
                         btn -> this.minecraft.setScreen(this.parent)
-                ).bounds(centerX - 130, centerY + 55, 260, 20).build());
+                ).bounds(centerX - 130, centerY + 53, 260, 20).build());
                 return;
             }
 
@@ -471,6 +474,28 @@ public class MCloudSyncScreens {
             syncThread.start();
         }
 
+        private void playOfflineAndProceed() {
+            try {
+                WorldSyncMetadata meta = WorldSyncMetadata.load(this.worldDir);
+                long baseRevision = meta != null ? meta.lastSyncedRevision : 0L;
+                // Prepare level.dat for this player so their own inventory is loaded
+                LevelDatPlayerSwapper.prepareForLocalPlayer(this.worldDir, this.playerUuid);
+                // Mark LocalCrashJournal active with baseRevision and playedOffline = true
+                LocalCrashJournal.markSessionActive(
+                        this.worldDir,
+                        this.playerUuid.toString(),
+                        this.playerName,
+                        baseRevision,
+                        true
+                );
+                // Start ActiveWorldSessionManager in offline polling mode (coordinatorOnline = false)
+                ActiveWorldSessionManager.startSession(this.worldDir, this.playerUuid, false);
+            } catch (Exception e) {
+                MCloudSyncMod.LOGGER.error("[MCloudSync] Failed to prepare offline play state", e);
+            }
+            this.onProceed.run();
+        }
+
         @Override
         public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
             this.renderBackground(graphics, mouseX, mouseY, partialTick);
@@ -486,8 +511,10 @@ public class MCloudSyncScreens {
                     graphics.drawCenteredString(this.font, this.progressText, centerX, centerY - 5, 0xAAAAAA);
                 }
             } else {
-                graphics.drawCenteredString(this.font, Component.literal("Coordinator Unreachable / Sync Failed").withStyle(ChatFormatting.RED, ChatFormatting.BOLD), centerX, centerY - 25, 0xFF5555);
-                graphics.drawCenteredString(this.font, Component.literal(this.errorMessage != null ? this.errorMessage : "Unknown error").withStyle(ChatFormatting.GRAY), centerX, centerY - 10, 0x888888);
+                graphics.drawCenteredString(this.font, Component.literal("Coordinator Unreachable (Offline Mode)").withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD), centerX, centerY - 45, 0xFFAA00);
+                graphics.drawCenteredString(this.font, Component.literal("Coordinator unreachable (offline/no internet).").withStyle(ChatFormatting.WHITE), centerX, centerY - 25, 0xFFFFFF);
+                graphics.drawCenteredString(this.font, Component.literal("You can safely play offline; MCloudSync will merge and").withStyle(ChatFormatting.GRAY), centerX, centerY - 12, 0xAAAAAA);
+                graphics.drawCenteredString(this.font, Component.literal("upload your progress when connection returns.").withStyle(ChatFormatting.GRAY), centerX, centerY + 1, 0xAAAAAA);
             }
         }
     }

@@ -29,15 +29,23 @@ public class LocalCrashJournal {
     public String holderName;
     public long sessionStartedEpochMs;
     public boolean dirty;
+    public long baseRevision;
+    public boolean playedOffline;
 
     public LocalCrashJournal() {
     }
 
     public LocalCrashJournal(String holderUuid, String holderName) {
+        this(holderUuid, holderName, 0L, false);
+    }
+
+    public LocalCrashJournal(String holderUuid, String holderName, long baseRevision, boolean playedOffline) {
         this.holderUuid = holderUuid;
         this.holderName = holderName;
         this.sessionStartedEpochMs = Instant.now().toEpochMilli();
         this.dirty = true;
+        this.baseRevision = baseRevision;
+        this.playedOffline = playedOffline;
     }
 
     public static Path getJournalPath(Path worldDir) {
@@ -61,8 +69,12 @@ public class LocalCrashJournal {
     }
 
     public static void markSessionActive(Path worldDir, String holderUuid, String holderName) throws IOException {
+        markSessionActive(worldDir, holderUuid, holderName, 0L, false);
+    }
+
+    public static void markSessionActive(Path worldDir, String holderUuid, String holderName, long baseRevision, boolean playedOffline) throws IOException {
         Files.createDirectories(worldDir);
-        LocalCrashJournal journal = new LocalCrashJournal(holderUuid, holderName);
+        LocalCrashJournal journal = new LocalCrashJournal(holderUuid, holderName, baseRevision, playedOffline);
         try (Writer writer = Files.newBufferedWriter(getJournalPath(worldDir), StandardCharsets.UTF_8)) {
             GSON.toJson(journal, writer);
         }

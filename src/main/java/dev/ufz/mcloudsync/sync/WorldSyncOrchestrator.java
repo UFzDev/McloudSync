@@ -3,8 +3,11 @@ package dev.ufz.mcloudsync.sync;
 import dev.ufz.mcloudsync.MCloudSyncMod;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -51,14 +54,24 @@ public class WorldSyncOrchestrator {
         SyncCoordinatorClient client = new SyncCoordinatorClient(meta.coordinatorUrl, meta.authToken);
         String playerUuidStr = localPlayerUuid.toString();
 
-        // Check if we crashed last time while holding the world
+        // Check if we crashed last time while holding the world or played offline
         if (LocalCrashJournal.hasDirtyCrashJournal(worldDir)) {
-            MCloudSyncMod.LOGGER.warn("[MCloudSync] Detected dirty crash journal in {}. Running automatic crash recovery upload...", worldDir.getFileName());
-            if (listener != null) listener.onProgress("Recovering crashed session...", 0, 1);
+            LocalCrashJournal journal = LocalCrashJournal.load(worldDir);
+            MCloudSyncMod.LOGGER.warn("[MCloudSync] Detected dirty crash journal in {} (baseRevision: {}, playedOffline: {}). Running recovery...",
+                    worldDir.getFileName(), journal != null ? journal.baseRevision : 0, journal != null && journal.playedOffline);
+            if (listener != null) listener.onProgress("Connecting to coordinator...", 0, 1);
             SyncCoordinatorClient.LockAcquireResult recoveryLock = client.acquireLock(meta.worldId, playerUuidStr, localPlayerName, true);
             if (recoveryLock.acquired()) {
-                pushWorldDelta(worldDir, meta, client, localPlayerUuid, listener);
-                LocalCrashJournal.clearSessionJournal(worldDir);
+                DeltaManifest remoteManifest = client.getRemoteManifest(meta.worldId);
+                boolean isDivergent = journal != null && journal.baseRevision > 0 && remoteManifest.revision > journal.baseRevision;
+                if (isDivergent) {
+                    MCloudSyncMod.LOGGER.warn("[MCloudSync] Divergent offline conflict detected (remote rev: {}, local base rev: {}). Merging...",
+                            remoteManifest.revision, journal.baseRevision);
+                    mergeDivergentOfflineSession(worldDir, meta, client, localPlayerUuid, journal, remoteManifest, listener);
+                } else {
+                    pushWorldDelta(worldDir, meta, client, localPlayerUuid, listener);
+                    LocalCrashJournal.clearSessionJournal(worldDir);
+                }
             }
         }
 
@@ -92,7 +105,7 @@ public class WorldSyncOrchestrator {
             // Prepare level.dat for this specific player UUID (prevents inventory cloning!)
             LevelDatPlayerSwapper.prepareForLocalPlayer(worldDir, localPlayerUuid);
             // Write crash journal before Minecraft starts ticking
-            LocalCrashJournal.markSessionActive(worldDir, playerUuidStr, localPlayerName);
+            LocalCrashJournal.markSessionActive(worldDir, playerUuidStr, localPlayerName, meta.lastSyncedRevision, false);
             return new SyncSessionResult(true, false, null, localPlayerName, "World synchronized and locked for " + localPlayerName);
         } catch (Exception e) {
             // Release lock if pull fails so the world doesn't stay locked
@@ -176,6 +189,7 @@ public class WorldSyncOrchestrator {
 
         meta.lastSyncedRevision = remoteManifest.revision;
         meta.save(worldDir);
+        saveManifestCache(worldDir, remoteManifest);
     }
 
     /**
@@ -213,9 +227,191 @@ public class WorldSyncOrchestrator {
         DeltaManifest committed = client.commitManifest(meta.worldId, localPlayerUuid.toString(), localManifest);
         meta.lastSyncedRevision = committed.revision;
         meta.save(worldDir);
+        saveManifestCache(worldDir, committed);
 
         // Step 4: Restore local player into level.dat so local world remains immediately playable offline if needed
         LevelDatPlayerSwapper.prepareForLocalPlayer(worldDir, localPlayerUuid);
+    }
+
+    /**
+     * Performs a smart player-aware merge when both the local player and a friend
+     * played offline while the coordinator was unreachable.
+     * 1. Creates a timestamped safety backup of local player files in `.mcloud-conflict-backup`.
+     * 2. Normalizes `level.dat` to extract the local player's inventory to `playerdata/<uuid>.dat`.
+     * 3. For any file belonging to ANOTHER player (`playerdata/`, `cobblemonplayerdata/`, `advancements/`, `stats/`),
+     *    downloads the remote version from the coordinator (preserving friend's progress 100%).
+     * 4. For region/dimension files:
+     *    - If modified remotely AND not modified locally since `lastSyncedRevision`, downloads from coordinator.
+     *    - If modified locally, keeps our local version.
+     * 5. Uploads the merged world delta via `pushWorldDelta` (committing revision = remoteRevision + 1)
+     *    and clears the crash journal.
+     */
+    public static void mergeDivergentOfflineSession(
+            Path worldDir,
+            WorldSyncMetadata meta,
+            SyncCoordinatorClient client,
+            UUID localPlayerUuid,
+            LocalCrashJournal journal,
+            DeltaManifest remoteManifest,
+            ProgressListener listener
+    ) throws IOException, InterruptedException {
+        // Step 1: Create timestamped safety backup of local player files
+        Path backupDir = worldDir.resolve(".mcloud-conflict-backup").resolve("conflict-" + System.currentTimeMillis());
+        Files.createDirectories(backupDir);
+        createConflictBackup(worldDir, backupDir);
+        MCloudSyncMod.LOGGER.info("[MCloudSync] Created safety backup before merge at {}", backupDir);
+
+        // Step 2: Normalize local level.dat so local player's latest inventory is saved in playerdata/<uuid>.dat
+        LevelDatPlayerSwapper.normalizeForUpload(worldDir, localPlayerUuid);
+
+        // Step 3: Build local manifest after normalization
+        long candidateRev = Math.max(remoteManifest.revision, meta.lastSyncedRevision) + 1L;
+        DeltaManifest localManifest = DeltaManifest.buildFromDirectory(worldDir, candidateRev);
+        String localUuidStr = (localPlayerUuid != null) ? localPlayerUuid.toString() : "";
+
+        // Download friend's files and remote region files that were not touched locally
+        for (Map.Entry<String, DeltaManifest.FileEntry> entry : remoteManifest.files.entrySet()) {
+            String relPath = entry.getKey();
+            DeltaManifest.FileEntry remoteEntry = entry.getValue();
+
+            boolean isFriendPlayerData = (relPath.startsWith("playerdata/")
+                    || relPath.startsWith("cobblemonplayerdata/")
+                    || relPath.startsWith("advancements/")
+                    || relPath.startsWith("stats/"))
+                    && (!localUuidStr.isEmpty() && !relPath.contains(localUuidStr));
+
+            boolean isRegionOrWorldData = relPath.startsWith("region/")
+                    || relPath.startsWith("entities/")
+                    || relPath.startsWith("poi/")
+                    || relPath.startsWith("DIM-1/")
+                    || relPath.startsWith("DIM1/")
+                    || relPath.startsWith("dimensions/");
+
+            if (isFriendPlayerData) {
+                // Friend's progress: download remote file to preserve friend's Pokemon & inventory 100%!
+                if (listener != null) listener.onProgress("Preserving friend progress: " + relPath, 0, 0);
+                Path targetFile = resolveSafeChild(worldDir, relPath);
+                client.downloadFile(meta.worldId, relPath, targetFile, remoteEntry.sha256());
+            } else if (isRegionOrWorldData) {
+                DeltaManifest.FileEntry localEntry = localManifest.files.get(relPath);
+                if (localEntry == null) {
+                    // Only exists remotely -> download
+                    Path targetFile = resolveSafeChild(worldDir, relPath);
+                    client.downloadFile(meta.worldId, relPath, targetFile, remoteEntry.sha256());
+                } else if (!localEntry.sha256().equals(remoteEntry.sha256())) {
+                    // Content differs. Check if modified locally:
+                    boolean modifiedLocally = isFileModifiedLocally(worldDir, relPath, localEntry, journal);
+                    if (!modifiedLocally) {
+                        // Modified remotely AND NOT modified locally -> download remote version
+                        Path targetFile = resolveSafeChild(worldDir, relPath);
+                        client.downloadFile(meta.worldId, relPath, targetFile, remoteEntry.sha256());
+                    } else {
+                        // Modified locally -> keep local version!
+                        MCloudSyncMod.LOGGER.info("[MCloudSync] Conflict resolution: keeping local version of {}", relPath);
+                    }
+                }
+            } else if (!localManifest.files.containsKey(relPath)) {
+                // Any other remote file that doesn't exist locally: download
+                Path targetFile = resolveSafeChild(worldDir, relPath);
+                client.downloadFile(meta.worldId, relPath, targetFile, remoteEntry.sha256());
+            }
+        }
+
+        // Step 4: Commit merged world delta and clear journal
+        pushWorldDelta(worldDir, meta, client, localPlayerUuid, listener);
+        LocalCrashJournal.clearSessionJournal(worldDir);
+        MCloudSyncMod.LOGGER.info("[MCloudSync] Divergent offline session successfully merged and pushed to coordinator (rev: {})", meta.lastSyncedRevision);
+    }
+
+    private static void createConflictBackup(Path worldDir, Path backupDir) {
+        try {
+            copyIfExists(worldDir.resolve("level.dat"), backupDir.resolve("level.dat"));
+            copyIfExists(worldDir.resolve("level.dat_old"), backupDir.resolve("level.dat_old"));
+
+            String[] playerDirs = new String[]{"playerdata", "cobblemonplayerdata", "advancements", "stats"};
+            for (String dirName : playerDirs) {
+                Path sourceDir = worldDir.resolve(dirName);
+                if (Files.isDirectory(sourceDir)) {
+                    Path destDir = backupDir.resolve(dirName);
+                    Files.createDirectories(destDir);
+                    try (var stream = Files.walk(sourceDir)) {
+                        stream.forEach(source -> {
+                            try {
+                                Path dest = destDir.resolve(sourceDir.relativize(source));
+                                if (Files.isDirectory(source)) {
+                                    Files.createDirectories(dest);
+                                } else {
+                                    Files.copy(source, dest, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                                }
+                            } catch (IOException ignored) {
+                            }
+                        });
+                    }
+                }
+            }
+        } catch (Exception e) {
+            MCloudSyncMod.LOGGER.error("[MCloudSync] Failed to create complete conflict backup", e);
+        }
+    }
+
+    private static void copyIfExists(Path source, Path dest) {
+        try {
+            if (Files.isRegularFile(source)) {
+                Files.createDirectories(dest.getParent());
+                Files.copy(source, dest, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (IOException ignored) {
+        }
+    }
+
+    private static boolean isFileModifiedLocally(
+            Path worldDir,
+            String relPath,
+            DeltaManifest.FileEntry localEntry,
+            LocalCrashJournal journal
+    ) {
+        DeltaManifest cache = loadManifestCache(worldDir);
+        if (cache != null && cache.files.containsKey(relPath)) {
+            String baseSha = cache.files.get(relPath).sha256();
+            return !localEntry.sha256().equals(baseSha);
+        }
+
+        if (journal != null && journal.sessionStartedEpochMs > 0) {
+            try {
+                Path localFile = resolveSafeChild(worldDir, relPath);
+                if (Files.isRegularFile(localFile)) {
+                    long lastMod = Files.getLastModifiedTime(localFile).toMillis();
+                    return lastMod >= (journal.sessionStartedEpochMs - 1000L);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return false;
+    }
+
+    public static final String MANIFEST_CACHE_FILENAME = ".mcloud-manifest-cache.json";
+
+    public static void saveManifestCache(Path worldDir, DeltaManifest manifest) {
+        if (worldDir == null || manifest == null) return;
+        try {
+            Path p = worldDir.resolve(MANIFEST_CACHE_FILENAME);
+            Files.writeString(p, manifest.toJson(), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            MCloudSyncMod.LOGGER.debug("[MCloudSync] Failed to write manifest cache: {}", e.getMessage());
+        }
+    }
+
+    public static DeltaManifest loadManifestCache(Path worldDir) {
+        if (worldDir == null) return null;
+        try {
+            Path p = worldDir.resolve(MANIFEST_CACHE_FILENAME);
+            if (Files.isRegularFile(p)) {
+                String raw = Files.readString(p, StandardCharsets.UTF_8);
+                return DeltaManifest.fromJson(raw);
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
     }
 
     /**

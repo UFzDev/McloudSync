@@ -377,4 +377,199 @@ public class RealCoordinatorNetworkTest {
 
         client.releaseLock(worldId, playerA.toString());
     }
+
+    @Test
+    @DisplayName("8. Divergent Offline Conflict Resolution: both Uriel and Friend play while coordinator is unreachable, and smart merge preserves both players' inventories/Pokemon and merges regions without data loss")
+    void testDivergentOfflineConflictResolution(@TempDir Path tempDir) throws Exception {
+        String worldId = "conflict-world-" + UUID.randomUUID();
+        UUID uuidUriel = UUID.fromString("11111111-2222-3333-4444-555555555555");
+        UUID uuidFriend = UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        // -------------------------------------------------------------
+        // Step 1: Base World (Revision 1) created by Uriel
+        // -------------------------------------------------------------
+        Path urielDir = tempDir.resolve("uriel_saves/PokemonConflictWorld");
+        Files.createDirectories(urielDir.resolve("region"));
+        Files.createDirectories(urielDir.resolve("cobblemonplayerdata"));
+
+        // Initial Overworld region (v1)
+        byte[] regionBaseBytes = new byte[65536];
+        new Random(1001).nextBytes(regionBaseBytes);
+        Files.write(urielDir.resolve("region/r.0.0.mca"), regionBaseBytes);
+
+        // Uriel starts with a level 25 Charmeleon
+        Files.writeString(urielDir.resolve("cobblemonplayerdata/" + uuidUriel + ".json"),
+                "{\"party\":[{\"species\":\"Charmeleon\",\"level\":25}]}");
+
+        // Uriel's initial level.dat
+        CompoundTag rootUriel = new CompoundTag();
+        CompoundTag dataUriel = new CompoundTag();
+        CompoundTag playerTagUriel = new CompoundTag();
+        playerTagUriel.putUUID("UUID", uuidUriel);
+        playerTagUriel.putInt("XpLevel", 25);
+        playerTagUriel.putString("SpecialItem", "Uriel_PokeBall");
+        dataUriel.put("Player", playerTagUriel);
+        dataUriel.putString("LevelName", "ConflictWorld");
+        rootUriel.put("Data", dataUriel);
+        NbtIo.writeCompressed(rootUriel, urielDir.resolve("level.dat"));
+
+        WorldSyncMetadata urielMeta = new WorldSyncMetadata(worldId, "PokemonConflictWorld", baseUrl, AUTH_TOKEN);
+        urielMeta.save(urielDir);
+
+        // Uriel launches and exits -> pushes revision 1 to coordinator
+        WorldSyncOrchestrator.SyncSessionResult initialLaunch = WorldSyncOrchestrator.prepareWorldBeforeLaunch(
+                urielDir, uuidUriel, "Uriel", null
+        );
+        assertTrue(initialLaunch.canPlaySingleplayer());
+        WorldSyncOrchestrator.finalizeWorldAfterExit(urielDir, uuidUriel, null);
+
+        DeltaManifest rev1Manifest = client.getRemoteManifest(worldId);
+        assertEquals(1L, rev1Manifest.revision);
+
+        // -------------------------------------------------------------
+        // Step 2: Friend clones the world at Revision 1
+        // -------------------------------------------------------------
+        Path friendDir = WorldSyncOrchestrator.cloneWorldFromInviteToken(
+                tempDir.resolve("friend_saves"),
+                "FriendConflictWorld",
+                urielMeta.toInviteToken(),
+                uuidFriend,
+                null
+        );
+        assertEquals(1L, WorldSyncMetadata.load(friendDir).lastSyncedRevision);
+
+        // -------------------------------------------------------------
+        // Step 3: Offline divergence begins!
+        // Both players play offline while coordinator was simulated as unreachable
+        // -------------------------------------------------------------
+
+        // 3A. Friend plays offline from baseRevision 1:
+        LocalCrashJournal.markSessionActive(friendDir, uuidFriend.toString(), "Friend", 1L, true);
+        LevelDatPlayerSwapper.prepareForLocalPlayer(friendDir, uuidFriend);
+
+        // Friend catches Blastoise lvl 50
+        Files.writeString(friendDir.resolve("cobblemonplayerdata/" + uuidFriend + ".json"),
+                "{\"party\":[{\"species\":\"Blastoise\",\"level\":50}]}");
+
+        // Friend explores Nether: creates DIM-1/r.0.0.mca
+        Files.createDirectories(friendDir.resolve("DIM-1"));
+        byte[] netherBytes = new byte[32768];
+        new Random(777).nextBytes(netherBytes);
+        Files.write(friendDir.resolve("DIM-1/r.0.0.mca"), netherBytes);
+
+        // Friend gains XP lvl 40 and MasterBall in level.dat
+        CompoundTag friendLevelDat = NbtIo.readCompressed(friendDir.resolve("level.dat"), NbtAccounter.unlimitedHeap());
+        CompoundTag friendTag = new CompoundTag();
+        friendTag.putUUID("UUID", uuidFriend);
+        friendTag.putInt("XpLevel", 40);
+        friendTag.putString("SpecialItem", "Friend_MasterBall");
+        friendLevelDat.getCompound("Data").put("Player", friendTag);
+        NbtIo.writeCompressed(friendLevelDat, friendDir.resolve("level.dat"));
+
+        // Friend comes online first! Friend pushes Revision 2 to coordinator
+        WorldSyncOrchestrator.finalizeWorldAfterExit(friendDir, uuidFriend, null);
+        DeltaManifest rev2Manifest = client.getRemoteManifest(worldId);
+        assertEquals(2L, rev2Manifest.revision);
+        assertTrue(rev2Manifest.files.containsKey("DIM-1/r.0.0.mca"));
+        assertTrue(rev2Manifest.files.containsKey("cobblemonplayerdata/" + uuidFriend + ".json"));
+
+        // 3B. Uriel also played offline from baseRevision 1!
+        LocalCrashJournal.markSessionActive(urielDir, uuidUriel.toString(), "Uriel", 1L, true);
+        LevelDatPlayerSwapper.prepareForLocalPlayer(urielDir, uuidUriel);
+
+        // Uriel catches Rayquaza lvl 80 and evolves Charizard lvl 70
+        Files.writeString(urielDir.resolve("cobblemonplayerdata/" + uuidUriel + ".json"),
+                "{\"party\":[{\"species\":\"Charizard\",\"level\":70},{\"species\":\"Rayquaza\",\"level\":80}]}");
+
+        // Uriel modifies the Overworld region (builds a castle)
+        byte[] urielCastleBytes = new byte[65536];
+        new Random(2002).nextBytes(urielCastleBytes);
+        Files.write(urielDir.resolve("region/r.0.0.mca"), urielCastleBytes);
+
+        // Uriel gains XP lvl 99 and GodSword
+        CompoundTag urielOfflineLevelDat = NbtIo.readCompressed(urielDir.resolve("level.dat"), NbtAccounter.unlimitedHeap());
+        CompoundTag urielOfflineTag = new CompoundTag();
+        urielOfflineTag.putUUID("UUID", uuidUriel);
+        urielOfflineTag.putInt("XpLevel", 99);
+        urielOfflineTag.putString("SpecialItem", "Uriel_GodSword");
+        urielOfflineLevelDat.getCompound("Data").put("Player", urielOfflineTag);
+        NbtIo.writeCompressed(urielOfflineLevelDat, urielDir.resolve("level.dat"));
+
+        // -------------------------------------------------------------
+        // Step 4: Uriel reconnects to coordinator!
+        // Remote revision is 2, Uriel's journal baseRevision is 1 (2 > 1).
+        // Divergent conflict detected -> smart player-aware merge executes!
+        // -------------------------------------------------------------
+        assertTrue(LocalCrashJournal.hasDirtyCrashJournal(urielDir));
+        LocalCrashJournal journalBeforeLaunch = LocalCrashJournal.load(urielDir);
+        assertEquals(1L, journalBeforeLaunch.baseRevision);
+        assertTrue(journalBeforeLaunch.playedOffline);
+
+        WorldSyncOrchestrator.SyncSessionResult mergeLaunch = WorldSyncOrchestrator.prepareWorldBeforeLaunch(
+                urielDir, uuidUriel, "Uriel", null
+        );
+        assertTrue(mergeLaunch.canPlaySingleplayer());
+
+        // -------------------------------------------------------------
+        // Step 5: Verify Conflict Resolution & Zero Data Loss
+        // -------------------------------------------------------------
+
+        // 1. Safety backup exists in .mcloud-conflict-backup
+        Path backupDir = urielDir.resolve(".mcloud-conflict-backup");
+        assertTrue(Files.isDirectory(backupDir));
+        try (var stream = Files.list(backupDir)) {
+            assertTrue(stream.findAny().isPresent(), "Safety backup directory must contain timestamped backup");
+        }
+
+        // 2. Friend's Cobblemon data is preserved on Uriel's machine
+        Path friendCobbleOnUriel = urielDir.resolve("cobblemonplayerdata/" + uuidFriend + ".json");
+        assertTrue(Files.exists(friendCobbleOnUriel), "Friend's Cobblemon data must be preserved");
+        assertTrue(Files.readString(friendCobbleOnUriel).contains("Blastoise"));
+
+        // 3. Uriel's Cobblemon data was NOT overwritten
+        Path urielCobble = urielDir.resolve("cobblemonplayerdata/" + uuidUriel + ".json");
+        assertTrue(Files.readString(urielCobble).contains("Rayquaza"));
+
+        // 4. Friend's Nether exploration (DIM-1/r.0.0.mca) was pulled
+        Path netherOnUriel = urielDir.resolve("DIM-1/r.0.0.mca");
+        assertTrue(Files.exists(netherOnUriel), "Nether region created by friend must be merged");
+        assertArrayEquals(netherBytes, Files.readAllBytes(netherOnUriel));
+
+        // 5. Uriel's Overworld castle (region/r.0.0.mca) was kept
+        assertArrayEquals(urielCastleBytes, Files.readAllBytes(urielDir.resolve("region/r.0.0.mca")));
+
+        // 6. Uriel's level.dat contains Uriel's GodSword and XpLevel 99
+        CompoundTag urielMergedDat = NbtIo.readCompressed(urielDir.resolve("level.dat"), NbtAccounter.unlimitedHeap());
+        CompoundTag urielActiveTag = urielMergedDat.getCompound("Data").getCompound("Player");
+        assertEquals(99, urielActiveTag.getInt("XpLevel"));
+        assertEquals("Uriel_GodSword", urielActiveTag.getString("SpecialItem"));
+
+        // 7. Verify coordinator received the merged state as Revision 3 immediately upon launch
+        DeltaManifest rev3MergedManifest = client.getRemoteManifest(worldId);
+        assertEquals(3L, rev3MergedManifest.revision);
+        assertTrue(rev3MergedManifest.files.containsKey("cobblemonplayerdata/" + uuidFriend + ".json"));
+        assertTrue(rev3MergedManifest.files.containsKey("cobblemonplayerdata/" + uuidUriel + ".json"));
+        assertTrue(rev3MergedManifest.files.containsKey("DIM-1/r.0.0.mca"));
+        assertTrue(rev3MergedManifest.files.containsKey("region/r.0.0.mca"));
+
+        // Clean exit from Uriel (commits post-session state)
+        WorldSyncOrchestrator.finalizeWorldAfterExit(urielDir, uuidUriel, null);
+        assertTrue(client.getRemoteManifest(worldId).revision >= 3L);
+
+        // 8. Friend now pulls Revision 3: Friend gets Uriel's castle while keeping Friend's own inventory
+        WorldSyncOrchestrator.SyncSessionResult friendLaunchAfterMerge = WorldSyncOrchestrator.prepareWorldBeforeLaunch(
+                friendDir, uuidFriend, "Friend", null
+        );
+        assertTrue(friendLaunchAfterMerge.canPlaySingleplayer());
+
+        assertArrayEquals(urielCastleBytes, Files.readAllBytes(friendDir.resolve("region/r.0.0.mca")));
+        assertTrue(Files.exists(friendDir.resolve("cobblemonplayerdata/" + uuidUriel + ".json")));
+
+        CompoundTag friendReloaded = NbtIo.readCompressed(friendDir.resolve("level.dat"), NbtAccounter.unlimitedHeap());
+        CompoundTag friendActive = friendReloaded.getCompound("Data").getCompound("Player");
+        assertEquals(40, friendActive.getInt("XpLevel"));
+        assertEquals("Friend_MasterBall", friendActive.getString("SpecialItem"));
+
+        WorldSyncOrchestrator.finalizeWorldAfterExit(friendDir, uuidFriend, null);
+    }
 }

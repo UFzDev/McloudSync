@@ -35,6 +35,7 @@ public class DeltaManifest {
             "session.lock",
             WorldSyncMetadata.METADATA_FILENAME,
             WorldSyncMetadata.LOCAL_LOCK_FILENAME,
+            ".mcloud-manifest-cache.json",
             ".DS_Store",
             "Thumbs.db"
     );
@@ -88,7 +89,8 @@ public class DeltaManifest {
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
                 if (!dir.equals(worldDir)) {
                     String folderName = dir.getFileName().toString();
-                    if (folderName.startsWith(".git") || folderName.equals("cache") || folderName.equals("backups")) {
+                    if (folderName.startsWith(".git") || folderName.equals("cache") || folderName.equals("backups")
+                            || folderName.startsWith(".mcloud-conflict-backup")) {
                         return FileVisitResult.SKIP_SUBTREE;
                     }
                 }

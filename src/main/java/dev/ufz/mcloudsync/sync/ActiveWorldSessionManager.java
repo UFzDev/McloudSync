@@ -34,9 +34,18 @@ public class ActiveWorldSessionManager {
     private static Path currentWorldDir;
     private static WorldSyncMetadata currentMeta;
     private static UUID currentPlayerUuid;
+    private static boolean coordinatorOnline = true;
     private static final Set<String> notifiedRequesters = new HashSet<>();
 
     public static synchronized void startSession(Path worldDir, UUID playerUuid) {
+        startSession(worldDir, playerUuid, true);
+    }
+
+    public static synchronized void startSession(Path worldDir, UUID playerUuid, boolean initialCoordinatorOnline) {
+        if (scheduler != null && worldDir.equals(currentWorldDir) && playerUuid.equals(currentPlayerUuid)) {
+            // Already running for this exact world; keep existing scheduler and online status
+            return;
+        }
         stopSession();
         if (!WorldSyncMetadata.isSyncedWorld(worldDir)) {
             return;
@@ -45,6 +54,7 @@ public class ActiveWorldSessionManager {
             currentWorldDir = worldDir;
             currentMeta = WorldSyncMetadata.load(worldDir);
             currentPlayerUuid = playerUuid;
+            coordinatorOnline = initialCoordinatorOnline;
             notifiedRequesters.clear();
 
             int interval = Math.max(5, MCloudSyncConfig.get().heartbeatIntervalSeconds);
@@ -55,8 +65,8 @@ public class ActiveWorldSessionManager {
             });
 
             scheduler.scheduleAtFixedRate(ActiveWorldSessionManager::tickHeartbeat, 5, interval, TimeUnit.SECONDS);
-            MCloudSyncMod.LOGGER.info("[MCloudSync] Started active session heartbeat for world '{}' ({})",
-                    currentMeta.worldName, currentMeta.worldId);
+            MCloudSyncMod.LOGGER.info("[MCloudSync] Started active session heartbeat for world '{}' (online: {})",
+                    currentMeta.worldName, coordinatorOnline);
         } catch (Exception e) {
             MCloudSyncMod.LOGGER.error("[MCloudSync] Failed to start session heartbeat", e);
         }
@@ -70,7 +80,16 @@ public class ActiveWorldSessionManager {
         currentWorldDir = null;
         currentMeta = null;
         currentPlayerUuid = null;
+        coordinatorOnline = true;
         notifiedRequesters.clear();
+    }
+
+    public static synchronized boolean isCoordinatorOnline() {
+        return coordinatorOnline;
+    }
+
+    public static synchronized void setCoordinatorOnline(boolean online) {
+        coordinatorOnline = online;
     }
 
     public static synchronized Path getCurrentWorldDir() {
@@ -99,11 +118,36 @@ public class ActiveWorldSessionManager {
             }
 
             SyncCoordinatorClient client = new SyncCoordinatorClient(meta.coordinatorUrl, meta.authToken);
-            SyncCoordinatorClient.WorldStatusResponse status = client.sendHeartbeat(
-                    meta.worldId,
-                    playerUuid.toString(),
-                    activeLanUrl
-            );
+            SyncCoordinatorClient.WorldStatusResponse status;
+
+            boolean wasOnline;
+            synchronized (ActiveWorldSessionManager.class) {
+                wasOnline = coordinatorOnline;
+            }
+
+            if (!wasOnline) {
+                // Reconnecting from offline mode: acquire lock on coordinator
+                String name = getLocalPlayerName();
+                SyncCoordinatorClient.LockAcquireResult lockRes = client.acquireLock(
+                        meta.worldId, playerUuid.toString(), name, true
+                );
+                if (lockRes.acquired()) {
+                    status = lockRes.status();
+                    synchronized (ActiveWorldSessionManager.class) {
+                        coordinatorOnline = true;
+                    }
+                    showReconnectedNotification();
+                } else {
+                    // Lock conflict: someone else holds lock
+                    status = lockRes.status();
+                }
+            } else {
+                status = client.sendHeartbeat(
+                        meta.worldId,
+                        playerUuid.toString(),
+                        activeLanUrl
+                );
+            }
 
             if (status != null && status.joinRequests != null && !status.joinRequests.isEmpty()) {
                 for (SyncCoordinatorClient.JoinRequestInfo req : status.joinRequests) {
@@ -114,8 +158,73 @@ public class ActiveWorldSessionManager {
                 }
             }
         } catch (Exception e) {
+            boolean wasOnline;
+            synchronized (ActiveWorldSessionManager.class) {
+                wasOnline = coordinatorOnline;
+                if (wasOnline) {
+                    coordinatorOnline = false;
+                }
+            }
+            if (wasOnline) {
+                showDisconnectedNotification();
+            }
             MCloudSyncMod.LOGGER.debug("[MCloudSync] Heartbeat tick warning: {}", e.getMessage());
         }
+    }
+
+    private static void showReconnectedNotification() {
+        MCloudSyncMod.LOGGER.info("[MCloudSync] Coordinator Reconnected! Session lock & sync restored.");
+        sendNotification(
+                Component.literal("MCloud Sync » Reconnected!").withStyle(ChatFormatting.GREEN, ChatFormatting.BOLD),
+                Component.literal("Session lock & sync restored.").withStyle(ChatFormatting.WHITE),
+                Component.literal("MCloud Sync » Coordinator Reconnected! Session lock & sync restored.").withStyle(ChatFormatting.GREEN)
+        );
+    }
+
+    private static void showDisconnectedNotification() {
+        MCloudSyncMod.LOGGER.warn("[MCloudSync] Coordinator Offline. Playing locally; changes will auto-sync when connection returns.");
+        sendNotification(
+                Component.literal("MCloud Sync » Offline").withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD),
+                Component.literal("Playing locally; auto-sync on reconnect.").withStyle(ChatFormatting.YELLOW),
+                Component.literal("MCloud Sync » Coordinator Offline. Playing locally; changes will auto-sync when connection returns.").withStyle(ChatFormatting.GOLD)
+        );
+    }
+
+    private static void sendNotification(Component toastTitle, Component toastDesc, Component chatMsg) {
+        try {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc == null) return;
+            mc.execute(() -> {
+                try {
+                    mc.getToasts().addToast(new SystemToast(
+                            SystemToast.SystemToastId.PERIODIC_NOTIFICATION,
+                            toastTitle,
+                            toastDesc
+                    ));
+                } catch (Throwable ignored) {
+                }
+                try {
+                    if (mc.gui != null && mc.gui.getChat() != null) {
+                        mc.gui.getChat().addMessage(chatMsg);
+                    } else if (mc.player != null) {
+                        mc.player.sendSystemMessage(chatMsg);
+                    }
+                } catch (Throwable ignored) {
+                }
+            });
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static String getLocalPlayerName() {
+        try {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc != null && mc.getUser() != null) {
+                return mc.getUser().getName();
+            }
+        } catch (Throwable ignored) {
+        }
+        return "Player";
     }
 
     private static void onFriendJoinRequest(String friendName) {
