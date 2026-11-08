@@ -1,6 +1,7 @@
 package dev.ufz.mcloudsync.mixin;
 
 import dev.ufz.mcloudsync.client.MCloudSyncScreens;
+import dev.ufz.mcloudsync.client.WorldOpenFlowsHelper;
 import dev.ufz.mcloudsync.sync.ActiveWorldSessionManager;
 import dev.ufz.mcloudsync.sync.WorldSyncMetadata;
 import net.minecraft.ChatFormatting;
@@ -57,7 +58,7 @@ public abstract class DisconnectedScreenMixin extends Screen {
                     worldDir,
                     levelId,
                     () -> {
-                        WorldOpenFlowsMixin.markLevelPrepared(levelId);
+                        WorldOpenFlowsHelper.markLevelPrepared(levelId);
                         this.minecraft.createWorldOpenFlows().openWorld(
                                 levelId,
                                 () -> this.minecraft.setScreen(new SelectWorldScreen(new TitleScreen()))

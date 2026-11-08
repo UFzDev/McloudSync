@@ -1,6 +1,7 @@
 package dev.ufz.mcloudsync.mixin;
 
 import dev.ufz.mcloudsync.client.MCloudSyncScreens;
+import dev.ufz.mcloudsync.client.WorldOpenFlowsHelper;
 import dev.ufz.mcloudsync.sync.WorldSyncMetadata;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
@@ -8,15 +9,11 @@ import net.minecraft.client.gui.screens.worldselection.WorldOpenFlows;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
-import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.nio.file.Path;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -32,13 +29,6 @@ public class WorldOpenFlowsMixin {
     @Final
     private Minecraft minecraft;
 
-    @Unique
-    private static final Set<String> mcloudsync$preparedLevels = Collections.synchronizedSet(new HashSet<>());
-
-    public static void markLevelPrepared(String levelId) {
-        mcloudsync$preparedLevels.add(levelId);
-    }
-
     @Inject(
             method = "openWorld(Ljava/lang/String;Ljava/lang/Runnable;)V",
             at = @At("HEAD"),
@@ -51,7 +41,7 @@ public class WorldOpenFlowsMixin {
         }
 
         // If this level was already prepared asynchronously by our SyncingWorldScreen, proceed into vanilla loading!
-        if (mcloudsync$preparedLevels.remove(levelId)) {
+        if (WorldOpenFlowsHelper.consumeLevelPrepared(levelId)) {
             return;
         }
 
@@ -69,7 +59,7 @@ public class WorldOpenFlowsMixin {
                 playerUuid,
                 playerName,
                 () -> {
-                    mcloudsync$preparedLevels.add(levelId);
+                    WorldOpenFlowsHelper.markLevelPrepared(levelId);
                     this.minecraft.createWorldOpenFlows().openWorld(levelId, onCancel);
                 }
         ));
