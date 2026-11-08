@@ -23,10 +23,15 @@ public class WorldSyncOrchestrator {
     public record SyncSessionResult(
             boolean canPlaySingleplayer,
             boolean shouldConnectLan,
+            boolean isStaleLock,
             String lanTunnelUrl,
             String lockedByPlayerName,
             String message
     ) {
+        // Keep a convenience 5-arg constructor that sets isStaleLock = false for backward compatibility with existing callers/tests!
+        public SyncSessionResult(boolean canPlaySingleplayer, boolean shouldConnectLan, String lanTunnelUrl, String lockedByPlayerName, String message) {
+            this(canPlaySingleplayer, shouldConnectLan, false, lanTunnelUrl, lockedByPlayerName, message);
+        }
     }
 
     /**
@@ -46,6 +51,16 @@ public class WorldSyncOrchestrator {
             String localPlayerName,
             ProgressListener listener
     ) throws IOException, InterruptedException {
+        return prepareWorldBeforeLaunch(worldDir, localPlayerUuid, localPlayerName, false, listener);
+    }
+
+    public static SyncSessionResult prepareWorldBeforeLaunch(
+            Path worldDir,
+            UUID localPlayerUuid,
+            String localPlayerName,
+            boolean forceTakeoverStale,
+            ProgressListener listener
+    ) throws IOException, InterruptedException {
         if (!WorldSyncMetadata.isSyncedWorld(worldDir)) {
             return new SyncSessionResult(true, false, null, null, "Local unsynced world");
         }
@@ -60,7 +75,7 @@ public class WorldSyncOrchestrator {
             MCloudSyncMod.LOGGER.warn("[MCloudSync] Detected dirty crash journal in {} (baseRevision: {}, playedOffline: {}). Running recovery...",
                     worldDir.getFileName(), journal != null ? journal.baseRevision : 0, journal != null && journal.playedOffline);
             if (listener != null) listener.onProgress("Connecting to coordinator...", 0, 1);
-            SyncCoordinatorClient.LockAcquireResult recoveryLock = client.acquireLock(meta.worldId, playerUuidStr, localPlayerName, true);
+            SyncCoordinatorClient.LockAcquireResult recoveryLock = client.acquireLock(meta.worldId, playerUuidStr, localPlayerName, forceTakeoverStale);
             if (recoveryLock.acquired()) {
                 DeltaManifest remoteManifest = client.getRemoteManifest(meta.worldId);
                 boolean isDivergent = journal != null && journal.baseRevision > 0 && remoteManifest.revision > journal.baseRevision;
@@ -76,10 +91,20 @@ public class WorldSyncOrchestrator {
         }
 
         // Attempt to acquire mutex lock
-        SyncCoordinatorClient.LockAcquireResult lockRes = client.acquireLock(meta.worldId, playerUuidStr, localPlayerName, true);
+        SyncCoordinatorClient.LockAcquireResult lockRes = client.acquireLock(meta.worldId, playerUuidStr, localPlayerName, forceTakeoverStale);
         if (!lockRes.acquired()) {
             SyncCoordinatorClient.WorldStatusResponse status = lockRes.status();
             String holder = status != null && status.holderName != null ? status.holderName : "your friend";
+            if (status != null && status.state == SyncCoordinatorClient.LockState.STALE) {
+                return new SyncSessionResult(
+                        false,
+                        false,
+                        true,
+                        null,
+                        holder,
+                        holder + " lost connection (internet drop or power outage) without uploading their latest save!"
+                );
+            }
             String lanUrl = status != null ? status.lanTunnelUrl : null;
             if (lanUrl != null && !lanUrl.isBlank()) {
                 return new SyncSessionResult(

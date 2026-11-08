@@ -10,6 +10,7 @@ import dev.ufz.mcloudsync.sync.SyncCoordinatorClient;
 import dev.ufz.mcloudsync.sync.WorldSyncMetadata;
 import dev.ufz.mcloudsync.sync.WorldSyncOrchestrator;
 import net.minecraft.ChatFormatting;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
@@ -388,6 +389,7 @@ public class MCloudSyncScreens {
         private final String levelId;
         private final UUID playerUuid;
         private final String playerName;
+        private final boolean forceTakeoverStale;
         private final Runnable onProceed;
 
         private Component phaseText = Component.literal("Checking world mutex lock...").withStyle(ChatFormatting.AQUA);
@@ -396,13 +398,34 @@ public class MCloudSyncScreens {
         private String errorMessage = null;
 
         public SyncingWorldScreen(Screen parent, Path worldDir, String levelId, UUID playerUuid, String playerName, Runnable onProceed) {
+            this(parent, worldDir, levelId, playerUuid, playerName, false, onProceed);
+        }
+
+        public SyncingWorldScreen(Screen parent, Path worldDir, String levelId, UUID playerUuid, String playerName, boolean forceTakeoverStale, Runnable onProceed) {
             super(Component.literal("MCloud Sync — Synchronizing"));
             this.parent = parent;
             this.worldDir = worldDir;
             this.levelId = levelId;
             this.playerUuid = playerUuid;
             this.playerName = playerName;
+            this.forceTakeoverStale = forceTakeoverStale;
             this.onProceed = onProceed;
+        }
+
+        public SyncingWorldScreen(Screen parent, Path worldDir, String levelId, Runnable onProceed, boolean forceTakeoverStale) {
+            this(
+                    parent,
+                    worldDir,
+                    levelId,
+                    Minecraft.getInstance().getUser().getProfileId(),
+                    Minecraft.getInstance().getUser().getName(),
+                    forceTakeoverStale,
+                    onProceed
+            );
+        }
+
+        public SyncingWorldScreen(Screen parent, Path worldDir, String levelId, Runnable onProceed) {
+            this(parent, worldDir, levelId, onProceed, false);
         }
 
         @Override
@@ -435,6 +458,7 @@ public class MCloudSyncScreens {
                             this.worldDir,
                             this.playerUuid,
                             this.playerName,
+                            this.forceTakeoverStale,
                             (phase, done, total) -> this.minecraft.execute(() -> {
                                 this.phaseText = Component.literal(phase).withStyle(ChatFormatting.AQUA);
                                 if (total > 0) {
@@ -451,12 +475,22 @@ public class MCloudSyncScreens {
                         }
 
                         if (!result.canPlaySingleplayer()) {
-                            this.minecraft.setScreen(new WorldLockedScreen(
-                                    this.parent,
-                                    this.worldDir,
-                                    result.lockedByPlayerName(),
-                                    result.lanTunnelUrl()
-                            ));
+                            if (result.isStaleLock()) {
+                                this.minecraft.setScreen(new StaleLockWarningScreen(
+                                        this.parent,
+                                        this.worldDir,
+                                        this.levelId,
+                                        this.onProceed,
+                                        result.lockedByPlayerName()
+                                ));
+                            } else {
+                                this.minecraft.setScreen(new WorldLockedScreen(
+                                        this.parent,
+                                        this.worldDir,
+                                        result.lockedByPlayerName(),
+                                        result.lanTunnelUrl()
+                                ));
+                            }
                         } else {
                             this.onProceed.run();
                         }
@@ -667,6 +701,61 @@ public class MCloudSyncScreens {
             if (this.feedbackText != null && !this.feedbackText.getString().isEmpty()) {
                 graphics.drawCenteredString(this.font, this.feedbackText, centerX, centerY + 72, 0xFFFFFF);
             }
+        }
+    }
+
+    // =========================================================================
+    // 5. STALE LOCK WARNING SCREEN (Friend disconnected unexpectedly / crashed)
+    // =========================================================================
+    public static class StaleLockWarningScreen extends Screen {
+        private final Screen parent;
+        private final Path worldDir;
+        private final String levelId;
+        private final Runnable onProceed;
+        private final String holderName;
+
+        public StaleLockWarningScreen(Screen parent, Path worldDir, String levelId, Runnable onProceed, String holderName) {
+            super(Component.literal("MCloud Sync — Friend Disconnected Unexpectedly"));
+            this.parent = parent;
+            this.worldDir = worldDir;
+            this.levelId = levelId;
+            this.onProceed = onProceed;
+            this.holderName = holderName != null && !holderName.isBlank() ? holderName : "Your Friend";
+        }
+
+        @Override
+        protected void init() {
+            int centerX = this.width / 2;
+            int centerY = this.height / 2;
+
+            this.addRenderableWidget(Button.builder(
+                    Component.literal("Wait / Back to World List"),
+                    btn -> this.minecraft.setScreen(this.parent)
+            ).bounds(centerX - 140, centerY + 28, 280, 20).build());
+
+            this.addRenderableWidget(Button.builder(
+                    Component.literal("Take Over World Now (Auto-Merge Later)").withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD),
+                    btn -> this.minecraft.setScreen(new SyncingWorldScreen(this.parent, this.worldDir, this.levelId, this.onProceed, true))
+            ).bounds(centerX - 140, centerY + 53, 280, 20).build());
+        }
+
+        @Override
+        public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+            this.renderBackground(graphics, mouseX, mouseY, partialTick);
+            super.render(graphics, mouseX, mouseY, partialTick);
+            int centerX = this.width / 2;
+            int centerY = this.height / 2;
+
+            graphics.drawCenteredString(this.font, this.title, centerX, centerY - 55, 0xFFAA00);
+            graphics.drawCenteredString(this.font,
+                    Component.literal(this.holderName + " lost internet or crashed while playing!").withStyle(ChatFormatting.WHITE, ChatFormatting.BOLD),
+                    centerX, centerY - 30, 0xFFFFFF);
+            graphics.drawCenteredString(this.font,
+                    Component.literal("Their latest progress hasn't uploaded yet. Wait for them to reconnect,").withStyle(ChatFormatting.GRAY),
+                    centerX, centerY - 14, 0xAAAAAA);
+            graphics.drawCenteredString(this.font,
+                    Component.literal("or take over now (changes will smart-merge later).").withStyle(ChatFormatting.GRAY),
+                    centerX, centerY - 2, 0xAAAAAA);
         }
     }
 }

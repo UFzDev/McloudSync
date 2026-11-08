@@ -180,9 +180,17 @@ public class RealCoordinatorNetworkTest {
         SyncCoordinatorClient.WorldStatusResponse staleStatus = client.getWorldStatus(worldId);
         assertEquals(SyncCoordinatorClient.LockState.STALE, staleStatus.state, "Lock must transition to STALE after TTL expires");
 
-        // 6. Player B executes automatic takeover of the stale lock
+        // 6a. Player B calls acquireLock with forceTakeoverIfStale = false:
+        // Must reject with acquired = false, status != null, status.state == STALE (triggers the client disconnect warning screen!)
+        SyncCoordinatorClient.LockAcquireResult staleWarningRes = client.acquireLock(worldId, playerB.toString(), "PlayerB", false);
+        assertFalse(staleWarningRes.acquired(), "Player B must not acquire stale lock when forceTakeoverIfStale = false");
+        assertNotNull(staleWarningRes.status());
+        assertEquals(SyncCoordinatorClient.LockState.STALE, staleWarningRes.status().state);
+        assertEquals("PlayerA", staleWarningRes.status().holderName);
+
+        // 6b. Player B explicitly takes over the stale lock with forceTakeoverIfStale = true
         SyncCoordinatorClient.LockAcquireResult takeoverRes = client.acquireLock(worldId, playerB.toString(), "PlayerB", true);
-        assertTrue(takeoverRes.acquired(), "Player B should automatically take over the stale lock");
+        assertTrue(takeoverRes.acquired(), "Player B should successfully take over the stale lock with forceTakeoverIfStale = true");
         assertEquals(playerB.toString(), takeoverRes.status().holderUuid);
         assertEquals(SyncCoordinatorClient.LockState.LOCKED, takeoverRes.status().state);
 
@@ -571,5 +579,52 @@ public class RealCoordinatorNetworkTest {
         assertEquals("Friend_MasterBall", friendActive.getString("SpecialItem"));
 
         WorldSyncOrchestrator.finalizeWorldAfterExit(friendDir, uuidFriend, null);
+    }
+
+    @Test
+    @DisplayName("9. Stale lock client-disconnect warning: prepareWorldBeforeLaunch returns isStaleLock=true until explicit force takeover")
+    void testPrepareWorldBeforeLaunchStaleLockWarningAndTakeover(@TempDir Path tempDir) throws Exception {
+        String worldId = "stale-warning-world-" + UUID.randomUUID();
+        UUID friendUuid = UUID.randomUUID();
+        UUID localUuid = UUID.randomUUID();
+
+        // 1. Friend acquires lock on world
+        SyncCoordinatorClient.LockAcquireResult friendLock = client.acquireLock(worldId, friendUuid.toString(), "CrashyFriend", true);
+        assertTrue(friendLock.acquired());
+
+        // 2. Wait 1300ms (> LOCK_TTL_MS=1000) without heartbeat so lock transitions to STALE
+        Thread.sleep(1300);
+
+        // Prepare local world directory
+        Path localDir = tempDir.resolve("local_world");
+        Files.createDirectories(localDir);
+        WorldSyncMetadata meta = new WorldSyncMetadata(worldId, "StaleWarningWorld", baseUrl, AUTH_TOKEN);
+        meta.save(localDir);
+
+        // 3. Prepare world without force takeover -> Must return isStaleLock = true with warning message!
+        WorldSyncOrchestrator.SyncSessionResult warningResult = WorldSyncOrchestrator.prepareWorldBeforeLaunch(
+                localDir, localUuid, "LocalPlayer", false, null
+        );
+        assertFalse(warningResult.canPlaySingleplayer(), "Should not launch singleplayer when friend's lock is stale without explicit takeover");
+        assertFalse(warningResult.shouldConnectLan());
+        assertTrue(warningResult.isStaleLock(), "isStaleLock must be true when lock is STALE");
+        assertEquals("CrashyFriend", warningResult.lockedByPlayerName());
+        assertTrue(warningResult.message().contains("lost connection"), "Message should inform of lost connection/crash");
+
+        // 4. Default 4-arg prepareWorldBeforeLaunch also defaults to forceTakeoverStale = false
+        WorldSyncOrchestrator.SyncSessionResult defaultWarning = WorldSyncOrchestrator.prepareWorldBeforeLaunch(
+                localDir, localUuid, "LocalPlayer", null
+        );
+        assertTrue(defaultWarning.isStaleLock(), "4-arg overload must also default to isStaleLock detection");
+
+        // 5. User confirms [Take Over World Now] -> prepareWorldBeforeLaunch with forceTakeoverStale = true succeeds!
+        WorldSyncOrchestrator.SyncSessionResult takeoverResult = WorldSyncOrchestrator.prepareWorldBeforeLaunch(
+                localDir, localUuid, "LocalPlayer", true, null
+        );
+        assertTrue(takeoverResult.canPlaySingleplayer(), "Should successfully launch singleplayer when forceTakeoverStale is true");
+        assertFalse(takeoverResult.isStaleLock());
+
+        // Clean exit releases lock
+        WorldSyncOrchestrator.finalizeWorldAfterExit(localDir, localUuid, null);
     }
 }

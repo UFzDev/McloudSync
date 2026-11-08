@@ -167,7 +167,7 @@ const server = http.createServer(async (req, res) => {
       const canAcquire =
         lock.state === 'FREE' ||
         lock.holderUuid === holderUuid ||
-        (lock.state === 'STALE' && forceTakeoverIfStale !== false);
+        (lock.state === 'STALE' && forceTakeoverIfStale === true);
 
       if (!canAcquire) {
         return sendJson(res, 409, lock);
@@ -189,7 +189,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && action === 'heartbeat') {
       const body = await readJsonBody(req);
       const { holderUuid, lanTunnelUrl } = body;
-      if (lock.holderUuid && lock.holderUuid !== holderUuid && lock.state === 'LOCKED') {
+      if (lock.holderUuid && lock.holderUuid !== holderUuid) {
         return sendJson(res, 409, lock);
       }
       lock.state = 'LOCKED';
