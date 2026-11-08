@@ -35,6 +35,8 @@ public class ActiveWorldSessionManager {
     private static WorldSyncMetadata currentMeta;
     private static UUID currentPlayerUuid;
     private static boolean coordinatorOnline = true;
+    private static volatile String lastPublishedLanUrl = null;
+    private static volatile Path lastJoinedLanWorldDir = null;
     private static final Set<String> notifiedRequesters = new HashSet<>();
 
     public static synchronized void startSession(Path worldDir, UUID playerUuid) {
@@ -81,7 +83,16 @@ public class ActiveWorldSessionManager {
         currentMeta = null;
         currentPlayerUuid = null;
         coordinatorOnline = true;
+        lastPublishedLanUrl = null;
         notifiedRequesters.clear();
+    }
+
+    public static Path getLastJoinedLanWorldDir() {
+        return lastJoinedLanWorldDir;
+    }
+
+    public static void setLastJoinedLanWorldDir(Path dir) {
+        lastJoinedLanWorldDir = dir;
     }
 
     public static synchronized boolean isCoordinatorOnline() {
@@ -115,6 +126,14 @@ public class ActiveWorldSessionManager {
             String activeLanUrl = null;
             if (CloudflaredManager.isRunning() && CloudflaredManager.getActiveUrl() != null) {
                 activeLanUrl = CloudflaredManager.getActiveUrl().replace("https://", "");
+            } else {
+                lastPublishedLanUrl = null;
+            }
+
+            if (activeLanUrl != null && activeLanUrl.equals(lastPublishedLanUrl)) {
+                // LAN Quiet Mode: skip sending periodic HTTP heartbeats while the LAN tunnel remains active.
+                // Guarantees 0% background HTTP network contention during multiplayer LAN gameplay.
+                return;
             }
 
             SyncCoordinatorClient client = new SyncCoordinatorClient(meta.coordinatorUrl, meta.authToken);
@@ -147,6 +166,9 @@ public class ActiveWorldSessionManager {
                         playerUuid.toString(),
                         activeLanUrl
                 );
+                if (status != null && activeLanUrl != null) {
+                    lastPublishedLanUrl = activeLanUrl;
+                }
             }
 
             if (status != null && status.joinRequests != null && !status.joinRequests.isEmpty()) {
@@ -230,19 +252,22 @@ public class ActiveWorldSessionManager {
     private static void onFriendJoinRequest(String friendName) {
         Minecraft mc = Minecraft.getInstance();
         mc.execute(() -> {
-            if (MCloudSyncConfig.get().autoOpenLanOnFriendRequest) {
-                openWorldToMCloudLan(mc);
-                return;
-            }
-
-            // Show native Minecraft Toast in top-right corner
+            // Always show native Minecraft Toast in top-right corner
             try {
                 mc.getToasts().addToast(new SystemToast(
                         SystemToast.SystemToastId.PERIODIC_NOTIFICATION,
-                        Component.literal("MCloud Sync » " + friendName + " wants to join!").withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD),
-                        Component.literal("Click in chat or run /mcloudsync openlan").withStyle(ChatFormatting.AQUA)
+                        Component.literal("MCloud Sync » " + friendName + " is joining via MCloud LAN!").withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD),
+                        Component.literal("Opening MCloud LAN tunnel automatically...").withStyle(ChatFormatting.AQUA)
                 ));
             } catch (Throwable ignored) {
+            }
+
+            IntegratedServer server = mc.getSingleplayerServer();
+            boolean notPublished = server == null || !server.isPublished() || !CloudflaredManager.isRunning();
+
+            if (MCloudSyncConfig.get().autoOpenLanOnFriendRequest || notPublished) {
+                openWorldToMCloudLan(mc);
+                return;
             }
 
             // Send clickable prompt in chat
@@ -300,12 +325,12 @@ public class ActiveWorldSessionManager {
             for (int i = 0; i < 60; i++) {
                 if (CloudflaredManager.isRunning() && CloudflaredManager.getActiveUrl() != null) {
                     tickHeartbeat();
-                    break;
+                    return;
                 }
                 try {
                     Thread.sleep(500);
                 } catch (InterruptedException ignored) {
-                    break;
+                    return;
                 }
             }
         }, "MCloudSync-LanUrlPublisher");

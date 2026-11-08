@@ -16,6 +16,8 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.ConnectScreen;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.TitleScreen;
+import net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
 import net.minecraft.network.chat.Component;
@@ -632,8 +634,10 @@ public class MCloudSyncScreens {
             } catch (Throwable ignored) {
             }
 
+            ActiveWorldSessionManager.setLastJoinedLanWorldDir(this.worldDir);
             ServerData serverData = new ServerData("MCloud Shared World (" + this.holderName + ")", cleanAddress, ServerData.Type.OTHER);
-            ConnectScreen.startConnecting(this.parent, this.minecraft, ServerAddress.parseString(cleanAddress), serverData, false, null);
+            Screen multiplayerParent = new JoinMultiplayerScreen(new TitleScreen());
+            ConnectScreen.startConnecting(multiplayerParent, this.minecraft, ServerAddress.parseString(cleanAddress), serverData, false, null);
         }
 
         private void sendJoinRequestAndPoll() {

@@ -10,6 +10,7 @@ import dev.ufz.mcloudsync.sync.WorldSyncOrchestrator;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.commands.CommandSourceStack;
@@ -46,6 +47,21 @@ public class MCloudSyncMod implements ModInitializer {
 
         ServerLifecycleEvents.SERVER_STARTED.register(this::onServerStarted);
         ServerLifecycleEvents.SERVER_STOPPED.register(this::onServerStopped);
+
+        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
+            if (server.isDedicatedServer()) {
+                return;
+            }
+            server.execute(() -> {
+                try {
+                    String name = (handler.getPlayer() != null) ? handler.getPlayer().getScoreboardName() : "guest";
+                    LOGGER.info("[MCloudSync] Player {} disconnected from LAN session. Flushing player inventories and Cobblemon data to disk...", name);
+                    server.getPlayerList().saveAll();
+                } catch (Exception e) {
+                    LOGGER.error("[MCloudSync] Failed to save player data on guest disconnect", e);
+                }
+            });
+        });
     }
 
     private void onServerStarted(MinecraftServer server) {

@@ -35,6 +35,10 @@ public class WorldOpenFlowsMixin {
     @Unique
     private static final Set<String> mcloudsync$preparedLevels = Collections.synchronizedSet(new HashSet<>());
 
+    public static void markLevelPrepared(String levelId) {
+        mcloudsync$preparedLevels.add(levelId);
+    }
+
     @Inject(
             method = "openWorld(Ljava/lang/String;Ljava/lang/Runnable;)V",
             at = @At("HEAD"),

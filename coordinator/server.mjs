@@ -102,7 +102,7 @@ function evaluateWorldState(worldId, revision) {
   }
   lock.revision = revision;
 
-  if (lock.state === 'LOCKED' && now - lock.lastHeartbeatAt > LOCK_TTL_MS) {
+  if (lock.state === 'LOCKED' && !lock.lanTunnelUrl && now - lock.lastHeartbeatAt > LOCK_TTL_MS) {
     lock.state = 'STALE';
   }
   return lock;

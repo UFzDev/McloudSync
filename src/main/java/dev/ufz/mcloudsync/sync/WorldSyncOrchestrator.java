@@ -92,6 +92,22 @@ public class WorldSyncOrchestrator {
 
         // Attempt to acquire mutex lock
         SyncCoordinatorClient.LockAcquireResult lockRes = client.acquireLock(meta.worldId, playerUuidStr, localPlayerName, forceTakeoverStale);
+        if (!lockRes.acquired() && forceTakeoverStale) {
+            SyncCoordinatorClient.WorldStatusResponse initialStatus = lockRes.status();
+            if (initialStatus != null && initialStatus.state == SyncCoordinatorClient.LockState.LOCKED) {
+                // Host may still be finishing their exit upload and unlock. Retry up to 3 times (1.5s apart).
+                for (int retry = 1; retry <= 3; retry++) {
+                    if (listener != null) {
+                        listener.onProgress("Waiting for previous host to finish saving... (" + retry + "/3)", 0, 0);
+                    }
+                    Thread.sleep(1500);
+                    lockRes = client.acquireLock(meta.worldId, playerUuidStr, localPlayerName, forceTakeoverStale);
+                    if (lockRes.acquired()) {
+                        break;
+                    }
+                }
+            }
+        }
         if (!lockRes.acquired()) {
             SyncCoordinatorClient.WorldStatusResponse status = lockRes.status();
             String holder = status != null && status.holderName != null ? status.holderName : "your friend";

@@ -23,6 +23,10 @@ import java.util.List;
  */
 public class SyncCoordinatorClient {
     private static final Gson GSON = new GsonBuilder().create();
+    private static final HttpClient SHARED_HTTP_CLIENT = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(5))
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .build();
 
     private final String baseUrl;
     private final String authToken;
@@ -31,10 +35,7 @@ public class SyncCoordinatorClient {
     public SyncCoordinatorClient(String baseUrl, String authToken) {
         this.baseUrl = WorldSyncMetadata.normalizeUrl(baseUrl);
         this.authToken = authToken != null ? authToken.trim() : "";
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(5))
-                .followRedirects(HttpClient.Redirect.NORMAL)
-                .build();
+        this.httpClient = SHARED_HTTP_CLIENT;
     }
 
     public enum LockState {
@@ -77,7 +78,7 @@ public class SyncCoordinatorClient {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(this.baseUrl + path))
                 .timeout(Duration.ofSeconds(15))
-                .header("User-Agent", "MCloudSync/1.0.0");
+                .header("User-Agent", "MCloudSync/1.1.0");
         if (!this.authToken.isEmpty()) {
             builder.header("Authorization", "Bearer " + this.authToken);
         }

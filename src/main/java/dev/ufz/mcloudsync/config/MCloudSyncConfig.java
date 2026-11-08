@@ -20,7 +20,7 @@ public class MCloudSyncConfig {
     public String defaultCoordinatorUrl = "http://127.0.0.1:8787";
     public String defaultAuthToken = "";
     public int heartbeatIntervalSeconds = 20;
-    public boolean autoOpenLanOnFriendRequest = false;
+    public boolean autoOpenLanOnFriendRequest = true;
 
     public static synchronized MCloudSyncConfig get() {
         if (instance == null) {
@@ -39,6 +39,9 @@ public class MCloudSyncConfig {
             try (Reader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
                 MCloudSyncConfig loaded = GSON.fromJson(reader, MCloudSyncConfig.class);
                 if (loaded != null) {
+                    if (loaded.defaultCoordinatorUrl == null) loaded.defaultCoordinatorUrl = "http://127.0.0.1:8787";
+                    if (loaded.defaultAuthToken == null) loaded.defaultAuthToken = "";
+                    if (loaded.heartbeatIntervalSeconds <= 0) loaded.heartbeatIntervalSeconds = 20;
                     return loaded;
                 }
             } catch (Exception e) {

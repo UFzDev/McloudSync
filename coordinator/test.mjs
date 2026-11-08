@@ -162,3 +162,79 @@ test('MCloudSync Coordinator stale lock warning and explicit takeover', async (t
   assert.equal(takeoverData.state, 'LOCKED');
   assert.equal(takeoverData.holderUuid, 'uuid-2');
 });
+
+test('MCloudSync Coordinator LAN Quiet Mode keeps LOCKED state without heartbeat', async (t) => {
+  const QUIET_PORT = 18789;
+  const QUIET_DATA_DIR = path.resolve(__dirname, './test_quiet_data');
+  await fsp.rm(QUIET_DATA_DIR, { recursive: true, force: true });
+  await fsp.mkdir(QUIET_DATA_DIR, { recursive: true });
+
+  const child = spawn(process.execPath, [path.resolve(__dirname, 'server.mjs')], {
+    env: {
+      ...process.env,
+      PORT: String(QUIET_PORT),
+      DATA_DIR: QUIET_DATA_DIR,
+      LOCK_TTL_MS: '400'
+    },
+    stdio: 'pipe'
+  });
+
+  t.after(async () => {
+    child.kill('SIGTERM');
+    await fsp.rm(QUIET_DATA_DIR, { recursive: true, force: true });
+  });
+
+  const baseUrl = `http://127.0.0.1:${QUIET_PORT}`;
+  let online = false;
+  for (let i = 0; i < 30; i++) {
+    try {
+      const res = await fetch(`${baseUrl}/api/v1/health`);
+      if (res.status === 200) {
+        online = true;
+        break;
+      }
+    } catch {}
+    await new Promise(r => setTimeout(r, 100));
+  }
+  assert.equal(online, true, 'Server must be online');
+
+  const worldId = 'test-lan-quiet-world';
+
+  // 1. Host acquires lock
+  const lock1 = await fetch(`${baseUrl}/api/v1/worlds/${worldId}/lock`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ holderUuid: 'host-uuid', holderName: 'HostPlayer' })
+  });
+  assert.equal(lock1.status, 200);
+
+  // 2. Host publishes LAN tunnel URL via heartbeat
+  const hbRes = await fetch(`${baseUrl}/api/v1/worlds/${worldId}/heartbeat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ holderUuid: 'host-uuid', lanTunnelUrl: 'cool-tunnel.trycloudflare.com' })
+  });
+  assert.equal(hbRes.status, 200);
+  const hbData = await hbRes.json();
+  assert.equal(hbData.lanTunnelUrl, 'cool-tunnel.trycloudflare.com');
+
+  // 3. Wait 600ms (> 400ms TTL) with zero heartbeats (LAN Quiet Mode)
+  await new Promise(r => setTimeout(r, 600));
+
+  // 4. Status MUST remain LOCKED (not STALE) because lanTunnelUrl is active!
+  const statusRes = await fetch(`${baseUrl}/api/v1/worlds/${worldId}/status`);
+  const statusData = await statusRes.json();
+  assert.equal(statusData.state, 'LOCKED', 'LAN Quiet Mode must prevent lock from becoming STALE');
+  assert.equal(statusData.lanTunnelUrl, 'cool-tunnel.trycloudflare.com');
+
+  // 5. Host exits world and unlocks -> becomes FREE
+  const unlockRes = await fetch(`${baseUrl}/api/v1/worlds/${worldId}/unlock`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ holderUuid: 'host-uuid' })
+  });
+  assert.equal(unlockRes.status, 200);
+  const unlockData = await unlockRes.json();
+  assert.equal(unlockData.state, 'FREE');
+  assert.equal(unlockData.lanTunnelUrl, null);
+});
