@@ -1,7 +1,7 @@
 # 🏛️ ESPECIFICACIÓN TÉCNICA — MCLOUD SYNC (v1.0.0)
 
 ## 1. Propósito del Sistema
-**MCloud Sync (`mcloudsync`)** es una extensión oficial y dependiente al 100% de **MCloud (`mcloud`)** que permite a dos o más jugadores compartir un mismo mundo de Minecraft (con o sin modpacks pesados como Cobblemon) **sin necesidad de pagar ni mantener un servidor de Minecraft dedicado 24/7**.
+**MCloud Sync (`mcloudsync`)** es una extensión oficial y dependiente al 100% de **MCloud (`mcloud`)** que permite a dos o más jugadores compartir un mismo mundo de Minecraft (Vanilla o con modpacks pesados) **sin necesidad de pagar ni mantener un servidor de Minecraft dedicado 24/7**.
 
 Cada jugador ejecuta el motor pesado de Minecraft en su propia PC cuando desea jugar en solitario, mientras que un micro-coordinador ultraligero (consumo < 25 MB RAM, 0.1% CPU) gestiona el candado de sesión (Mutex) y la sincronización diferencial por archivos (Delta Sync). Cuando dos jugadores coinciden en horario, `MCloud Sync` coordina la apertura automática en LAN a través del motor de túneles WebSocket de `MCloud`.
 
@@ -35,7 +35,7 @@ En Minecraft Singleplayer (`IntegratedServer`), el motor guarda el estado del ju
    - Se busca `playerdata/<currentPlayerUUID>.dat`.
    - Si existe, se inyecta su compuesto NBT dentro de `Data.Player` en `level.dat`.
    - Si no existe (primera vez que este jugador entra al mundo), se elimina `Data.Player` de `level.dat` para que Minecraft lo spawnee limpio como jugador nuevo en el World Spawn sin robar el inventario del amigo.
-3. **Compatibilidad con Mods (Cobblemon, Xaero, etc.)**:
+3. **Compatibilidad con Mods (Xaero, modpacks técnicos/mágicos, etc.)**:
    - Se incluyen todas las subcarpetas de datos por UUID del mundo: `playerdata/`, `cobblemonplayerdata/`, `advancements/`, `stats/`, `data/`, `region/`, `entities/`, `poi/`, `DIM-1/`, `DIM1/`, y dimensiones de mods (`dimensions/`).
 
 ### 2.3. Sincronización Delta por Archivos (Evasión del Límite HTTP 413 de 100 MB en Cloudflare)

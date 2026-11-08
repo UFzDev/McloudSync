@@ -55,7 +55,7 @@ public class MCloudSyncMod implements ModInitializer {
             server.execute(() -> {
                 try {
                     String name = (handler.getPlayer() != null) ? handler.getPlayer().getScoreboardName() : "guest";
-                    LOGGER.info("[MCloudSync] Player {} disconnected from LAN session. Flushing player inventories and Cobblemon data to disk...", name);
+                    LOGGER.info("[MCloudSync] Player {} disconnected from LAN session. Flushing player inventories and saved data to disk...", name);
                     server.getPlayerList().saveAll();
                 } catch (Exception e) {
                     LOGGER.error("[MCloudSync] Failed to save player data on guest disconnect", e);

@@ -398,6 +398,8 @@ public class MCloudSyncScreens {
         private Component progressText = Component.empty();
         private boolean hasError = false;
         private String errorMessage = null;
+        private Thread syncWorkerThread = null;
+        private volatile boolean cancelled = false;
 
         public SyncingWorldScreen(Screen parent, Path worldDir, String levelId, UUID playerUuid, String playerName, Runnable onProceed) {
             this(parent, worldDir, levelId, playerUuid, playerName, false, onProceed);
@@ -430,6 +432,19 @@ public class MCloudSyncScreens {
             this(parent, worldDir, levelId, onProceed, false);
         }
 
+        private void cancelAndReturn() {
+            this.cancelled = true;
+            if (this.syncWorkerThread != null) {
+                this.syncWorkerThread.interrupt();
+            }
+            this.minecraft.setScreen(this.parent);
+        }
+
+        @Override
+        public void onClose() {
+            cancelAndReturn();
+        }
+
         @Override
         protected void init() {
             int centerX = this.width / 2;
@@ -443,71 +458,78 @@ public class MCloudSyncScreens {
 
                 this.addRenderableWidget(Button.builder(
                         Component.literal("Cancel (Back to World List)"),
-                        btn -> this.minecraft.setScreen(this.parent)
+                        btn -> cancelAndReturn()
                 ).bounds(centerX - 130, centerY + 53, 260, 20).build());
                 return;
             }
 
             this.addRenderableWidget(Button.builder(
                     Component.literal("Cancel"),
-                    btn -> this.minecraft.setScreen(this.parent)
+                    btn -> cancelAndReturn()
             ).bounds(centerX - 60, centerY + 45, 120, 20).build());
 
             // Start async synchronization
-            Thread syncThread = new Thread(() -> {
-                try {
-                    WorldSyncOrchestrator.SyncSessionResult result = WorldSyncOrchestrator.prepareWorldBeforeLaunch(
-                            this.worldDir,
-                            this.playerUuid,
-                            this.playerName,
-                            this.forceTakeoverStale,
-                            (phase, done, total) -> this.minecraft.execute(() -> {
-                                this.phaseText = Component.literal(phase).withStyle(ChatFormatting.AQUA);
-                                if (total > 0) {
-                                    this.progressText = Component.literal(done + " / " + total + " files").withStyle(ChatFormatting.GRAY);
-                                } else {
-                                    this.progressText = Component.empty();
-                                }
-                            })
-                    );
+            if (this.syncWorkerThread == null) {
+                this.syncWorkerThread = new Thread(() -> {
+                    try {
+                        WorldSyncOrchestrator.SyncSessionResult result = WorldSyncOrchestrator.prepareWorldBeforeLaunch(
+                                this.worldDir,
+                                this.playerUuid,
+                                this.playerName,
+                                this.forceTakeoverStale,
+                                (phase, done, total) -> this.minecraft.execute(() -> {
+                                    if (this.cancelled) return;
+                                    this.phaseText = Component.literal(phase).withStyle(ChatFormatting.AQUA);
+                                    if (total > 0) {
+                                        this.progressText = Component.literal(done + " / " + total + " files").withStyle(ChatFormatting.GRAY);
+                                    } else {
+                                        this.progressText = Component.empty();
+                                    }
+                                })
+                        );
 
-                    this.minecraft.execute(() -> {
-                        if (this.minecraft.screen != this) {
-                            return; // User cancelled
-                        }
-
-                        if (!result.canPlaySingleplayer()) {
-                            if (result.isStaleLock()) {
-                                this.minecraft.setScreen(new StaleLockWarningScreen(
-                                        this.parent,
-                                        this.worldDir,
-                                        this.levelId,
-                                        this.onProceed,
-                                        result.lockedByPlayerName()
-                                ));
-                            } else {
-                                this.minecraft.setScreen(new WorldLockedScreen(
-                                        this.parent,
-                                        this.worldDir,
-                                        result.lockedByPlayerName(),
-                                        result.lanTunnelUrl()
-                                ));
+                        this.minecraft.execute(() -> {
+                            if (this.cancelled || this.minecraft.screen != this) {
+                                return; // User cancelled
                             }
-                        } else {
-                            this.onProceed.run();
-                        }
-                    });
-                } catch (Exception e) {
-                    MCloudSyncMod.LOGGER.error("[MCloudSync] Async world preparation failed", e);
-                    this.minecraft.execute(() -> {
-                        this.hasError = true;
-                        this.errorMessage = e.getMessage() != null ? e.getMessage() : e.toString();
-                        this.rebuildWidgets();
-                    });
-                }
-            }, "MCloudSync-PrepareWorldWorker");
-            syncThread.setDaemon(true);
-            syncThread.start();
+
+                            if (!result.canPlaySingleplayer()) {
+                                if (result.isStaleLock()) {
+                                    this.minecraft.setScreen(new StaleLockWarningScreen(
+                                            this.parent,
+                                            this.worldDir,
+                                            this.levelId,
+                                            this.onProceed,
+                                            result.lockedByPlayerName()
+                                    ));
+                                } else {
+                                    this.minecraft.setScreen(new WorldLockedScreen(
+                                            this.parent,
+                                            this.worldDir,
+                                            result.lockedByPlayerName(),
+                                            result.lanTunnelUrl()
+                                    ));
+                                }
+                            } else {
+                                this.onProceed.run();
+                            }
+                        });
+                    } catch (InterruptedException e) {
+                        // User cancelled
+                        MCloudSyncMod.LOGGER.info("[MCloudSync] World preparation cancelled by user");
+                    } catch (Exception e) {
+                        if (this.cancelled) return;
+                        MCloudSyncMod.LOGGER.error("[MCloudSync] Async world preparation failed", e);
+                        this.minecraft.execute(() -> {
+                            this.hasError = true;
+                            this.errorMessage = e.getMessage() != null ? e.getMessage() : e.toString();
+                            this.rebuildWidgets();
+                        });
+                    }
+                }, "MCloudSync-PrepareWorldWorker");
+                this.syncWorkerThread.setDaemon(true);
+                this.syncWorkerThread.start();
+            }
         }
 
         private void playOfflineAndProceed() {

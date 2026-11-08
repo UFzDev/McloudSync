@@ -227,6 +227,17 @@ test('MCloudSync Coordinator LAN Quiet Mode keeps LOCKED state without heartbeat
   assert.equal(statusData.state, 'LOCKED', 'LAN Quiet Mode must prevent lock from becoming STALE');
   assert.equal(statusData.lanTunnelUrl, 'cool-tunnel.trycloudflare.com');
 
+  // 4b. Host exits LAN session: sends heartbeat with "" to clear tunnel url before exit upload
+  const clearHbRes = await fetch(`${baseUrl}/api/v1/worlds/${worldId}/heartbeat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ holderUuid: 'host-uuid', lanTunnelUrl: '' })
+  });
+  assert.equal(clearHbRes.status, 200);
+  const clearHbData = await clearHbRes.json();
+  assert.equal(clearHbData.lanTunnelUrl, null, 'Empty string lanTunnelUrl must clear tunnel URL to null');
+  assert.equal(clearHbData.state, 'LOCKED', 'State must remain LOCKED while clearing tunnel URL');
+
   // 5. Host exits world and unlocks -> becomes FREE
   const unlockRes = await fetch(`${baseUrl}/api/v1/worlds/${worldId}/unlock`, {
     method: 'POST',

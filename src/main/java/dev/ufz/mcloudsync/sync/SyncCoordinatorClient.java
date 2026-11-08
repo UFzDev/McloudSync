@@ -78,7 +78,7 @@ public class SyncCoordinatorClient {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(this.baseUrl + path))
                 .timeout(Duration.ofSeconds(15))
-                .header("User-Agent", "MCloudSync/1.1.0");
+                .header("User-Agent", "MCloudSync/1.1.1");
         if (!this.authToken.isEmpty()) {
             builder.header("Authorization", "Bearer " + this.authToken);
         }

@@ -196,7 +196,7 @@ const server = http.createServer(async (req, res) => {
       lock.holderUuid = holderUuid || lock.holderUuid;
       lock.lastHeartbeatAt = Date.now();
       if (lanTunnelUrl !== undefined) {
-        lock.lanTunnelUrl = lanTunnelUrl;
+        lock.lanTunnelUrl = lanTunnelUrl || null;
       }
       await saveLocks();
       return sendJson(res, 200, lock);

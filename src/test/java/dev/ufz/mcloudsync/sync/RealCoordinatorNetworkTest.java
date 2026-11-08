@@ -627,4 +627,108 @@ public class RealCoordinatorNetworkTest {
         // Clean exit releases lock
         WorldSyncOrchestrator.finalizeWorldAfterExit(localDir, localUuid, null);
     }
+
+    @Test
+    @DisplayName("10. Patient Waiting Handoff: when previous host exits and is uploading deltas, second player patiently waits, acquires lock upon upload completion, and receives latest files")
+    void testPatientWaitingHandoffDuringSlowHostExitUpload(@TempDir Path tempDir) throws Exception {
+        String worldId = "patient-wait-world-" + UUID.randomUUID();
+        UUID hostUuid = UUID.fromString("11111111-aaaa-bbbb-cccc-111111111111");
+        UUID guestUuid = UUID.fromString("22222222-aaaa-bbbb-cccc-222222222222");
+
+        // 1. Setup Host world directory
+        Path hostDir = tempDir.resolve("host_saves/PatientWorld");
+        Files.createDirectories(hostDir.resolve("region"));
+        Files.writeString(hostDir.resolve("region/r.0.0.mca"), "base-region-content");
+
+        // Host initial level.dat
+        CompoundTag rootHost = new CompoundTag();
+        CompoundTag dataHost = new CompoundTag();
+        CompoundTag playerHost = new CompoundTag();
+        playerHost.putUUID("UUID", hostUuid);
+        playerHost.putInt("XpLevel", 10);
+        dataHost.put("Player", playerHost);
+        dataHost.putString("LevelName", "PatientWorld");
+        rootHost.put("Data", dataHost);
+        NbtIo.writeCompressed(rootHost, hostDir.resolve("level.dat"));
+
+        WorldSyncMetadata hostMeta = new WorldSyncMetadata(worldId, "PatientWorld", baseUrl, AUTH_TOKEN);
+        hostMeta.save(hostDir);
+
+        // Host launches and exits (commits rev 1)
+        WorldSyncOrchestrator.SyncSessionResult initLaunch = WorldSyncOrchestrator.prepareWorldBeforeLaunch(
+                hostDir, hostUuid, "HostPlayer", false, null
+        );
+        assertTrue(initLaunch.canPlaySingleplayer());
+        WorldSyncOrchestrator.finalizeWorldAfterExit(hostDir, hostUuid, null);
+
+        // 2. Guest clones world at rev 1
+        Path guestDir = WorldSyncOrchestrator.cloneWorldFromInviteToken(
+                tempDir.resolve("guest_saves"),
+                "GuestPatientWorld",
+                hostMeta.toInviteToken(),
+                guestUuid,
+                null
+        );
+        assertEquals(1L, WorldSyncMetadata.load(guestDir).lastSyncedRevision);
+
+        // 3. Host re-acquires lock to play and opens LAN
+        SyncCoordinatorClient.LockAcquireResult hostLock = client.acquireLock(worldId, hostUuid.toString(), "HostPlayer", true);
+        assertTrue(hostLock.acquired());
+        client.sendHeartbeat(worldId, hostUuid.toString(), "cool-tunnel.trycloudflare.com");
+
+        // 4. Host now starts exiting: clears lanTunnelUrl via heartbeat with ""
+        client.sendHeartbeat(worldId, hostUuid.toString(), "");
+
+        // 5. Spawn background thread for Host simulating a slow 3-4 second upload of a new region file
+        byte[] hostNewRegionData = new byte[65536];
+        new Random(444).nextBytes(hostNewRegionData);
+        Files.write(hostDir.resolve("region/r.1.1.mca"), hostNewRegionData);
+
+        Thread hostUploadThread = new Thread(() -> {
+            try {
+                // Host keeps the lock alive during upload by heartbeating (LOCK_TTL_MS is 1s in test environment)
+                for (int h = 0; h < 7; h++) {
+                    Thread.sleep(400);
+                    client.sendHeartbeat(worldId, hostUuid.toString(), "");
+                }
+
+                // Host performs upload and commits rev 2
+                WorldSyncOrchestrator.pushWorldDelta(hostDir, hostMeta, client, hostUuid, null);
+
+                // Host finishes upload and releases lock
+                client.releaseLock(worldId, hostUuid.toString());
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        });
+        hostUploadThread.start();
+
+        // 6. Guest immediately attempts prepareWorldBeforeLaunch with forceTakeoverStale = true (handoff from DisconnectedScreen)
+        java.util.List<String> progressLog = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        WorldSyncOrchestrator.SyncSessionResult guestResult = WorldSyncOrchestrator.prepareWorldBeforeLaunch(
+                guestDir,
+                guestUuid,
+                "GuestPlayer",
+                true,
+                (phase, done, total) -> progressLog.add(phase)
+        );
+
+        hostUploadThread.join(10000);
+
+        // 7. Verify Guest acquired the lock after waiting and can play Singleplayer
+        assertTrue(guestResult.canPlaySingleplayer(), "Guest should acquire lock after host finishes uploading");
+        assertFalse(guestResult.isStaleLock());
+
+        // 8. Verify Guest's local folder received the newly uploaded region file
+        Path guestNewRegion = guestDir.resolve("region/r.1.1.mca");
+        assertTrue(Files.exists(guestNewRegion), "Guest must pull the new region file uploaded by host");
+        assertArrayEquals(hostNewRegionData, Files.readAllBytes(guestNewRegion));
+
+        // 9. Verify progress messages were logged
+        boolean sawWaitingMessage = progressLog.stream().anyMatch(msg -> msg.contains("Waiting for HostPlayer to finish saving & uploading"));
+        assertTrue(sawWaitingMessage, "Progress listener must report waiting status while host is uploading: " + progressLog);
+
+        // Clean exit releases lock
+        WorldSyncOrchestrator.finalizeWorldAfterExit(guestDir, guestUuid, null);
+    }
 }

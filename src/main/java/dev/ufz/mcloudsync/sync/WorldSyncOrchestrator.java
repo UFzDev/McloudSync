@@ -95,18 +95,33 @@ public class WorldSyncOrchestrator {
         if (!lockRes.acquired() && forceTakeoverStale) {
             SyncCoordinatorClient.WorldStatusResponse initialStatus = lockRes.status();
             if (initialStatus != null && initialStatus.state == SyncCoordinatorClient.LockState.LOCKED) {
-                // Host may still be finishing their exit upload and unlock. Retry up to 3 times (1.5s apart).
-                for (int retry = 1; retry <= 3; retry++) {
+                // Host may still be finishing their exit upload and unlock. Poll up to 45 times (2s apart = up to 90s).
+                for (int i = 1; i <= 45; i++) {
+                    String holder = (lockRes.status() != null && lockRes.status().holderName != null) ? lockRes.status().holderName : "previous host";
+                    int elapsedSec = i * 2;
                     if (listener != null) {
-                        listener.onProgress("Waiting for previous host to finish saving... (" + retry + "/3)", 0, 0);
+                        listener.onProgress("Waiting for " + holder + " to finish saving & uploading (" + elapsedSec + "s)...", i, 45);
                     }
-                    Thread.sleep(1500);
-                    lockRes = client.acquireLock(meta.worldId, playerUuidStr, localPlayerName, forceTakeoverStale);
+                    Thread.sleep(2000);
+                    lockRes = client.acquireLock(meta.worldId, playerUuidStr, localPlayerName, true);
                     if (lockRes.acquired()) {
+                        break;
+                    }
+                    if (lockRes.status() != null && lockRes.status().lanTunnelUrl != null && !lockRes.status().lanTunnelUrl.isBlank()) {
+                        // The host is actually still hosting LAN; stop waiting to take over
                         break;
                     }
                 }
             }
+        }
+        if (Thread.currentThread().isInterrupted()) {
+            if (lockRes.acquired()) {
+                try {
+                    client.releaseLock(meta.worldId, playerUuidStr);
+                } catch (Exception ignored) {
+                }
+            }
+            throw new InterruptedException("World preparation was interrupted");
         }
         if (!lockRes.acquired()) {
             SyncCoordinatorClient.WorldStatusResponse status = lockRes.status();
@@ -177,6 +192,15 @@ public class WorldSyncOrchestrator {
         WorldSyncMetadata meta = WorldSyncMetadata.load(worldDir);
         SyncCoordinatorClient client = new SyncCoordinatorClient(meta.coordinatorUrl, meta.authToken);
         String playerUuidStr = localPlayerUuid.toString();
+
+        // Right at the start of finalizeWorldAfterExit (before pushWorldDelta), send a quick
+        // heartbeat with empty string to clear lanTunnelUrl on the coordinator while keeping
+        // the lock LOCKED during the final upload!
+        try {
+            client.sendHeartbeat(meta.worldId, playerUuidStr, "");
+        } catch (Exception e) {
+            MCloudSyncMod.LOGGER.debug("[MCloudSync] Failed to clear lanTunnelUrl before exit upload: {}", e.getMessage());
+        }
 
         try {
             pushWorldDelta(worldDir, meta, client, localPlayerUuid, listener);
